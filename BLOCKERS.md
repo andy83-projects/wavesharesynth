@@ -106,18 +106,23 @@ If codec driver also tries to set up I2S, there will be a conflict.
 ---
 
 ## Recommended Resolution Order
-1. ✅ Install ESP-IDF (or confirm it's installed)
-2. ✅ Get Waveshare BSP and extract pin definitions
-3. ✅ Update `main/main.c` with correct pins
-4. ✅ Integrate ESP32Synth component (git clone)
-5. ✅ Choose codec initialization strategy (BSP driver vs minimal I2C)
-6. ✅ Build and test for I2C communication
-7. ✅ Flash and listen for audio
-8. ✅ Debug if no sound (see troubleshooting in MILESTONE1.md)
 
-**Once all 8 steps pass → Milestone 1 complete**
+✅ DONE:
+1. Get Waveshare BSP and extract pin definitions
+2. Update `main/main.c` with correct pins (all 10 pins confirmed)
+3. Choose codec initialization strategy (Espressif ES8311 component)
+4. Codec full implementation with Espressif driver
+
+🚨 TODO (before build):
+5. Install ESP-IDF (or confirm it's installed) with esp32p4 target
+6. Clone and integrate ESP32Synth component
+7. Build: `idf.py set-target esp32p4 && idf.py build`
+8. Flash and listen for audio on GPIO 53 speaker
+9. Debug if no sound (see troubleshooting in MILESTONE1.md)
+
+**After steps 7-9 pass → Milestone 1 complete**
 
 ---
 
 **Last Updated**: 2026-11-16  
-**Status**: 0/8 steps complete
+**Status**: 4/9 steps complete (blockers resolved: pins, codec init, I2C setup)

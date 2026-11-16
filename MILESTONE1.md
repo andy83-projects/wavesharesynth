@@ -5,10 +5,10 @@
 ## Checklist
 
 ### Phase 1: Verification & Setup
-- [ ] Obtain Waveshare ESP32-P4-WIFI6-Touch-LCD-4C BSP
-  - Source: https://github.com/waveshare/ESP32-P4
-  - Extract pin definitions for I2S, I2C, speaker amp GPIO
-  - Update `main/main.c` with correct pins
+- [x] Obtain Waveshare ESP32-P4-WIFI6-Touch-LCD-XC pin definitions
+  - Source: https://docs.waveshare.com/ESP32-P4-WIFI6-Touch-LCD-XC/ESP-IDF
+  - Pins confirmed: I2S (GPIO9-13), I2C (GPIO7-8), Amp (GPIO53)
+  - Updated `main/main.c` with all correct pins ✓
 
 - [ ] Install ESP-IDF v5.3+ with esp32p4 target
   ```bash
@@ -26,18 +26,14 @@
   ```
 
 ### Phase 2: Build & Integration
-- [ ] Update `main/main.c`
-  - Confirm I2S pins from BSP
-  - Confirm I2C pins and codec address
-  - Confirm speaker amp enable pin and polarity
-  - Replace TODO codec init with actual ES8311 setup (from BSP or minimal I2C)
+- [x] Update `main/main.c` with correct pins and codec init ✓
+  - All I2S, I2C, amp pins confirmed
+  - ES8311 codec initialization complete with espressif/es8311 component
+  - Configured for 32 kHz, volume -20 dB
 
-- [ ] Update `CMakeLists.txt`
-  - Remove generic component list, add only what's needed:
-    - `esp_timer`, `driver`, `freertos`
-    - Waveshare BSP component (if available) or manual I2C/I2S
-    - `esp32_synth` (from components/)
-  - Verify no build conflicts between I2S setup and codec driver
+- [x] Update `CMakeLists.txt` with required components ✓
+  - Added `espressif/es8311` for codec driver
+  - `esp32_synth` placeholder ready (needs manual clone)
 
 - [ ] Configure ESP-IDF
   ```bash
