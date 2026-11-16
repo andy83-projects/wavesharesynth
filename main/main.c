@@ -114,10 +114,12 @@ esp_err_t init_codec(void)
                         TAG, "Failed to configure ES8311 sample frequency");
     ESP_RETURN_ON_ERROR(es8311_voice_volume_set(codec_handle, 70, NULL), TAG,
                         "Failed to set ES8311 volume");
+    ESP_RETURN_ON_ERROR(es8311_voice_mute(codec_handle, false), TAG,
+                        "Failed to unmute ES8311 output");
     ESP_RETURN_ON_ERROR(es8311_microphone_config(codec_handle, false), TAG,
                         "Failed to disable ES8311 microphone");
 
-    ESP_LOGI(TAG, "ES8311 codec initialized: %d Hz, volume 70", SAMPLE_RATE);
+    ESP_LOGI(TAG, "ES8311 codec initialized: %d Hz, volume 70, output unmuted", SAMPLE_RATE);
 
     return ESP_OK;
 }
