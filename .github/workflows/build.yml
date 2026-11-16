@@ -20,11 +20,13 @@ jobs:
     - name: Set target to ESP32-P4
       run: |
         . /opt/esp/idf/export.sh
+        export ESP_IDF_VERSION=5.5
         idf.py set-target esp32p4
 
     - name: Build project
       run: |
         . /opt/esp/idf/export.sh
+        export ESP_IDF_VERSION=5.5
         idf.py build
 
     - name: List build artifacts
