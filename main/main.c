@@ -28,8 +28,8 @@ static const char *TAG = "WAVESHARESYNTH";
 #define I2S_MCLK_PIN    GPIO_NUM_13     /* Master Clock */
 #define I2S_BCK_PIN     GPIO_NUM_12     /* Bit Clock (SCLK) */
 #define I2S_WS_PIN      GPIO_NUM_10     /* Word Select (LRCK) */
-#define I2S_DO_PIN      GPIO_NUM_11     /* Data Out to codec (ASDOUT) */
-#define I2S_DI_PIN      GPIO_NUM_9      /* Data In from codec (DSDIN) */
+#define I2S_DO_PIN      GPIO_NUM_9      /* Data Out to codec (DSDIN) */
+#define I2S_DI_PIN      GPIO_NUM_11     /* Data In from codec (ASDOUT) */
 
 /* I2C codec control bus */
 #define I2C_SDA_PIN     GPIO_NUM_7

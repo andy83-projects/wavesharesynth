@@ -59,16 +59,16 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 ```
 I2S:
-  BCK     = GPIO 8
-  WS      = GPIO 9
-  DO      = GPIO 10
-  DI      = GPIO 11
-  MCLK    = GPIO 12
+  BCK     = GPIO 12
+  WS      = GPIO 10
+  DO      = GPIO 9   (playback to ES8311)
+  DI      = GPIO 11  (capture from ES7210)
+  MCLK    = GPIO 13
 
 I2C (Codec):
-  SDA     = GPIO 17
-  SCL     = GPIO 18
+  SDA     = GPIO 7
+  SCL     = GPIO 8
 
 Audio:
-  Amp EN  = GPIO 41
+  Amp EN  = GPIO 53
 ```
