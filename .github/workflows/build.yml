@@ -18,14 +18,10 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Set target to ESP32-P4
-      run: |
-        cd /workspace
-        idf.py set-target esp32p4
+      run: idf.py set-target esp32p4
 
     - name: Build project
-      run: |
-        cd /workspace
-        idf.py build
+      run: idf.py build
 
     - name: List build artifacts
       run: |
