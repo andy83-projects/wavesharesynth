@@ -18,7 +18,7 @@ jobs:
     - name: Build with ESP-IDF v5.5.5 (Waveshare recommended)
       uses: espressif/esp-idf-ci-action@v1
       with:
-        esp_idf_docker_image: espressif/idf:v5.5.5
+        esp_idf_version: v5.5.5
         target: esp32p4
 
     - name: List build artifacts
