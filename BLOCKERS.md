@@ -2,61 +2,65 @@
 
 Before the project can build and audio can be tested, these blockers must be resolved:
 
-## 1. ⚠️ Pin Assignments (CRITICAL)
-**Status**: Unknown  
-**Issue**: `main/main.c` has placeholder pin values. Must verify from Waveshare BSP.
+## 1. ✅ Pin Assignments (CONFIRMED)
+**Status**: DONE  
+**Source**: https://docs.waveshare.com/ESP32-P4-WIFI6-Touch-LCD-XC/ESP-IDF
 
-**Pins needed**:
-- I2S: BCK, WS, DO, DI, MCLK
-- I2C codec: SDA, SCL (address typically 0x18 or 0x1A)
-- Speaker amp enable GPIO (and confirm polarity: active-high or active-low?)
+**Confirmed pins**:
+```
+I2S:
+  MCLK  = GPIO 13
+  BCK   = GPIO 12
+  WS    = GPIO 10
+  DO    = GPIO 11 (ASDOUT - data to codec)
+  DI    = GPIO 9  (DSDIN - data from codec)
 
-**Action**: 
-1. Download/clone Waveshare ESP32-P4 BSP: https://github.com/waveshare/ESP32-P4
-2. Find pin definitions in demo code (search for `I2S_`, `I2C_`, `GPIO_AMP`, etc.)
-3. Update all #define statements in `main/main.c`
-4. DO NOT proceed without this
+I2C (codec control):
+  SDA   = GPIO 7
+  SCL   = GPIO 8
+  Address = 0x18
 
-**Ref**: https://github.com/waveshare/ESP32-P4
+Speaker Amp:
+  PA_Ctrl = GPIO 53 (active-high, NS4150B amplifier)
+```
 
----
-
-## 2. ⚠️ Codec Initialization (CRITICAL)
-**Status**: Stubbed  
-**Issue**: `init_codec()` function in `main/main.c` is a placeholder.
-
-**Needs to**:
-- Bring up ES8311 over I2C
-- Configure sample rate to 32 kHz
-- Set line-out level
-- Possibly configure ADC (unused for now, but may need to be muted)
-
-**Options**:
-- Use Waveshare's BSP codec driver (if available as component)
-- Use `esp_codec_dev` generic driver (more portable)
-- Minimal register writes if neither available
-
-**Action**: 
-1. Check Waveshare BSP for ES8311 driver example
-2. Adapt or integrate into `init_codec()`
-3. Test I2C communication before proceeding
+**Updated in `main/main.c`** ✓
 
 ---
 
-## 3. ⚠️ ESP32Synth Component (BLOCKING)
-**Status**: Not added  
-**Issue**: Component doesn't exist yet, build will fail.
+## 2. ✅ Codec Initialization (DONE)
+**Status**: Complete with Espressif ES8311 component  
 
-**Action**:
+**Implementation**:
+- Uses official `espressif/es8311` component (high-level API)
+- Proper I2C device creation and initialization
+- Configured for 32 kHz sample rate with 12.288 MHz MCLK
+- Volume set to -20 dB default
+- Microphone disabled (playback only)
+
+**Code**: `init_codec()` in `main/main.c` ✓
+
+**Component dependency added**: `espressif/es8311: "^1.0.0"` in CMakeLists.txt
+
+---
+
+## 3. ⚠️ ESP32Synth Component (NEXT ACTION)
+**Status**: Not yet cloned  
+**Issue**: Component doesn't exist, build will fail without it.
+
+**Action** (run before building):
 ```bash
 cd /Users/andydrag/Documents/GitRepos/wavesharesynth/components
 git clone https://github.com/danilogcrf2-oss/ESP32Synth.git esp32synth
 ```
 
-**Verify**:
-- `components/esp32synth/CMakeLists.txt` exists and is ESP-IDF compatible
-- `components/esp32synth/esp32synth.h` available
-- `components/esp32synth/esp32synth_patches.hpp` available
+**Verify after clone**:
+- `components/esp32synth/CMakeLists.txt` exists
+- `components/esp32synth/esp32synth.h` present
+- `components/esp32synth/esp32synth_patches.hpp` present
+- Try a quick build to check integration
+
+**Note**: ESP32Synth source is already referenced in `main/CMakeLists.txt`
 
 ---
 

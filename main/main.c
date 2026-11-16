@@ -21,23 +21,24 @@
 
 static const char *TAG = "WAVESHARESYNTH";
 
-/* Pin configuration - from Waveshare ESP32-P4-WIFI6-Touch-LCD-4C BSP
- * TODO: Verify these against the official Waveshare BSP/demos
- * I2S: BCK, WS, DO, DI, MCLK
- * I2C: SDA, SCL (codec control)
- * Speaker Amp Enable
+/* Pin configuration - from Waveshare ESP32-P4-WIFI6-Touch-LCD-XC official docs
+ * https://docs.waveshare.com/ESP32-P4-WIFI6-Touch-LCD-XC/ESP-IDF
  */
 
-#define I2S_BCK_PIN     GPIO_NUM_8
-#define I2S_WS_PIN      GPIO_NUM_9
-#define I2S_DO_PIN      GPIO_NUM_10
-#define I2S_DI_PIN      GPIO_NUM_11
-#define I2S_MCLK_PIN    GPIO_NUM_12
+/* I2S Audio pins (connected to ES8311 codec) */
+#define I2S_MCLK_PIN    GPIO_NUM_13     /* Master Clock */
+#define I2S_BCK_PIN     GPIO_NUM_12     /* Bit Clock (SCLK) */
+#define I2S_WS_PIN      GPIO_NUM_10     /* Word Select (LRCK) */
+#define I2S_DO_PIN      GPIO_NUM_11     /* Data Out to codec (ASDOUT) */
+#define I2S_DI_PIN      GPIO_NUM_9      /* Data In from codec (DSDIN) */
 
-#define I2C_SDA_PIN     GPIO_NUM_17
-#define I2C_SCL_PIN     GPIO_NUM_18
+/* I2C codec control bus */
+#define I2C_SDA_PIN     GPIO_NUM_7
+#define I2C_SCL_PIN     GPIO_NUM_8
+#define ES8311_I2C_ADDR 0x18            /* ES8311 codec 7-bit address */
 
-#define SPEAKER_AMP_EN_PIN  GPIO_NUM_41
+/* Audio amplifier enable (NS4150B, active high) */
+#define SPEAKER_AMP_EN_PIN  GPIO_NUM_53
 
 #define I2C_MASTER_NUM      0
 #define I2C_MASTER_FREQ_HZ  400000
@@ -45,6 +46,7 @@ static const char *TAG = "WAVESHARESYNTH";
 #define I2S_PORT            I2S_NUM_0
 #define I2S_DMA_BUFFER_LEN  1024
 #define SAMPLE_RATE         32000
+#define I2S_CHANNELS        1
 
 static i2s_chan_handle_t tx_handle = NULL;
 static esp32synth_t synth = NULL;
@@ -86,11 +88,65 @@ esp_err_t init_speaker_amp(void)
 
 esp_err_t init_codec(void)
 {
-    /* Initialize ES8311 codec over I2C
-     * TODO: Use esp_codec_dev or minimal register init depending on ESP32Synth integration
+    /* Initialize ES8311 codec using Espressif's es8311 component
+     * Based on Waveshare ESP32-P4-WIFI6-Touch-LCD-XC examples
      */
 
-    ESP_LOGI(TAG, "ES8311 codec initialized");
+    i2c_master_bus_config_t bus_cfg = {
+        .sda_io_num = I2C_SDA_PIN,
+        .scl_io_num = I2C_SCL_PIN,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+
+    i2c_master_bus_handle_t bus_handle = NULL;
+    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &bus_handle), TAG,
+                        "Failed to create I2C bus for codec");
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = ES8311_I2C_ADDR,
+        .scl_speed_hz = 400000,
+    };
+
+    i2c_master_dev_handle_t dev_handle = NULL;
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle), TAG,
+                        "Failed to add ES8311 device to I2C bus");
+
+    /* Create ES8311 codec device and initialize */
+    es8311_handle_t es8311 = NULL;
+    ESP_RETURN_ON_ERROR(es8311_create(dev_handle, &es8311), TAG,
+                        "Failed to create ES8311 handle");
+
+    es8311_clock_config_t clock_cfg = {
+        .mclk_inverted = false,
+        .sclk_inverted = false,
+    };
+
+    ESP_RETURN_ON_ERROR(es8311_init(es8311, &clock_cfg, 16, 16), TAG,
+                        "Failed to initialize ES8311");
+
+    /* Configure for 32 kHz sample rate
+     * MCLK = 12.288 MHz (32 kHz × 384)
+     */
+    uint32_t mclk_freq = 12288000;
+    uint32_t sample_rate = 32000;
+
+    ESP_RETURN_ON_ERROR(es8311_sample_frequency_config(es8311, mclk_freq, sample_rate), TAG,
+                        "Failed to configure sample rate");
+
+    /* Set volume to -20 dB */
+    int8_t volume = -20;
+    ESP_RETURN_ON_ERROR(es8311_voice_volume_set(es8311, volume, NULL), TAG,
+                        "Failed to set volume");
+
+    /* Disable microphone (playback only) */
+    ESP_RETURN_ON_ERROR(es8311_microphone_config(es8311, false), TAG,
+                        "Failed to configure microphone");
+
+    ESP_LOGI(TAG, "ES8311 codec initialized: %d Hz, volume %d dB", sample_rate, volume);
+
     return ESP_OK;
 }
 
@@ -121,8 +177,8 @@ esp_err_t init_i2s(void)
 
     ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG, "Failed to enable I2S TX channel");
 
-    ESP_LOGI(TAG, "I2S initialized: BCK=%d, WS=%d, DO=%d, DI=%d, MCLK=%d",
-             I2S_BCK_PIN, I2S_WS_PIN, I2S_DO_PIN, I2S_DI_PIN, I2S_MCLK_PIN);
+    ESP_LOGI(TAG, "I2S initialized: MCLK=%d, BCK=%d, WS=%d, DO=%d, DI=%d",
+             I2S_MCLK_PIN, I2S_BCK_PIN, I2S_WS_PIN, I2S_DO_PIN, I2S_DI_PIN);
 
     return ESP_OK;
 }
@@ -159,7 +215,7 @@ void play_test_chord(void)
 
     esp32synth_set_patch(synth, 0, AA_Saw);  /* Saw wave on voice 0 */
 
-    esp32synth_note_on(synth, 0, 60);  /* C4
+    esp32synth_note_on(synth, 0, 60);  /* C4 */
     esp32synth_note_on(synth, 1, 64);  /* E4 */
     esp32synth_note_on(synth, 2, 67);  /* G4 */
 
@@ -177,7 +233,7 @@ void play_test_chord(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "=== Waveshare Synth Boot ===");
-    ESP_LOGI(TAG, "Target: ESP32-P4-WIFI6-Touch-LCD-4C");
+    ESP_LOGI(TAG, "Target: ESP32-P4-WIFI6-Touch-LCD-XC");
 
     /* Initialize in order */
     if (init_i2c() != ESP_OK) {
