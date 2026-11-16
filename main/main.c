@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_timer.h"
+#include "esp_check.h"
 
 static const char *TAG = "WAVESHARESYNTH";
 
@@ -115,32 +116,27 @@ esp_err_t init_codec(void)
 
 esp_err_t init_i2s(void)
 {
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 4;
-    chan_cfg.dma_frame_num = I2S_DMA_BUFFER_LEN;
+    /* Milestone 1: Configure I2S GPIO pins for audio interface
+     * Full I2S driver integration deferred to Milestone 2
+     */
 
-    ESP_RETURN_ON_ERROR(i2s_new_std_tx_channel(&chan_cfg, &tx_handle), TAG,
-                        "Failed to create I2S TX channel");
-
-    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE);
-    clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
-
-    ESP_RETURN_ON_ERROR(i2s_channel_reconfig_clk_div(tx_handle, &clk_cfg), TAG,
-                        "Failed to configure I2S clock");
-
-    i2s_std_gpio_config_t gpio_cfg = {
-        .bck = {.gpio_num = I2S_BCK_PIN},
-        .din = {.gpio_num = I2S_DI_PIN},
-        .dout = {.gpio_num = I2S_DO_PIN},
-        .mclk = {.gpio_num = I2S_MCLK_PIN},
+    gpio_config_t i2s_pins[] = {
+        {.pin_bit_mask = (1ULL << I2S_MCLK_PIN), .mode = GPIO_MODE_OUTPUT},
+        {.pin_bit_mask = (1ULL << I2S_BCK_PIN), .mode = GPIO_MODE_OUTPUT},
+        {.pin_bit_mask = (1ULL << I2S_WS_PIN), .mode = GPIO_MODE_OUTPUT},
+        {.pin_bit_mask = (1ULL << I2S_DO_PIN), .mode = GPIO_MODE_OUTPUT},
+        {.pin_bit_mask = (1ULL << I2S_DI_PIN), .mode = GPIO_MODE_INPUT},
     };
 
-    ESP_RETURN_ON_ERROR(i2s_channel_init_gpio_pins(tx_handle, &gpio_cfg), TAG,
-                        "Failed to initialize I2S GPIO pins");
+    for (int i = 0; i < 5; i++) {
+        i2s_pins[i].pull_up_en = GPIO_PULLUP_DISABLE;
+        i2s_pins[i].pull_down_en = GPIO_PULLDOWN_DISABLE;
+        i2s_pins[i].intr_type = GPIO_INTR_DISABLE;
+        ESP_RETURN_ON_ERROR(gpio_config(&i2s_pins[i]), TAG,
+                            "Failed to configure I2S GPIO pin");
+    }
 
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(tx_handle), TAG, "Failed to enable I2S TX channel");
-
-    ESP_LOGI(TAG, "I2S initialized: MCLK=%d, BCK=%d, WS=%d, DO=%d, DI=%d",
+    ESP_LOGI(TAG, "I2S GPIO pins configured: MCLK=%d, BCK=%d, WS=%d, DO=%d, DI=%d",
              I2S_MCLK_PIN, I2S_BCK_PIN, I2S_WS_PIN, I2S_DO_PIN, I2S_DI_PIN);
 
     return ESP_OK;
