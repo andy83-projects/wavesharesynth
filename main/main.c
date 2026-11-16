@@ -12,6 +12,8 @@
 #include "driver/gpio.h"
 
 #include "es8311.h"
+#include "bsp/esp-bsp.h"
+#include "bsp/display.h"
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -54,6 +56,8 @@ static const char *TAG = "WAVESHARESYNTH";
 
 static i2s_chan_handle_t tx_handle = NULL;
 static es8311_handle_t codec_handle = NULL;
+static esp_lcd_panel_handle_t display_panel = NULL;
+static esp_lcd_panel_io_handle_t display_io = NULL;
 
 esp_err_t init_i2c(void)
 {
@@ -167,6 +171,21 @@ esp_err_t init_synth(void)
     return ESP_OK;
 }
 
+esp_err_t init_display(void)
+{
+    ESP_RETURN_ON_ERROR(bsp_display_new(NULL, &display_panel, &display_io), TAG,
+                        "Failed to initialize 4C MIPI-DSI display");
+    ESP_RETURN_ON_ERROR(bsp_display_backlight_on(), TAG,
+                        "Failed to enable display backlight");
+
+    ESP_RETURN_ON_ERROR(esp_lcd_dpi_panel_set_pattern(
+                            display_panel, MIPI_DSI_PATTERN_BAR_VERTICAL), TAG,
+                        "Failed to set display test pattern");
+
+    ESP_LOGI(TAG, "4C display initialized: 720x720 color-bar test pattern");
+    return ESP_OK;
+}
+
 static void play_test_chord(void)
 {
     int16_t samples[TEST_BUFFER_FRAMES * 2];
@@ -230,6 +249,11 @@ void app_main(void)
 
     if (init_synth() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize synth");
+        return;
+    }
+
+    if (init_display() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize display");
         return;
     }
 
