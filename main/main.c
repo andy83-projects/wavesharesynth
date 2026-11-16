@@ -8,7 +8,6 @@
 #include "freertos/queue.h"
 
 #include "driver/i2s_std.h"
-#include "driver/i2c.h"
 #include "driver/gpio.h"
 
 #include "es8311.h"
@@ -61,21 +60,10 @@ static esp_lcd_panel_io_handle_t display_io = NULL;
 
 esp_err_t init_i2c(void)
 {
-    const i2c_config_t bus_cfg = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = I2C_SDA_PIN,
-        .scl_io_num = I2C_SCL_PIN,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ,
-    };
+    ESP_RETURN_ON_ERROR(bsp_i2c_init(), TAG, "Failed to initialize BSP I2C bus");
 
-    ESP_RETURN_ON_ERROR(i2c_param_config(I2C_NUM_0, &bus_cfg), TAG,
-                        "Failed to configure I2C master bus");
-    ESP_RETURN_ON_ERROR(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0), TAG,
-                        "Failed to install I2C master driver");
-
-    ESP_LOGI(TAG, "I2C master initialized on SDA=%d, SCL=%d", I2C_SDA_PIN, I2C_SCL_PIN);
+    ESP_LOGI(TAG, "BSP I2C master initialized on SDA=%d, SCL=%d (port %d)",
+             I2C_SDA_PIN, I2C_SCL_PIN, BSP_I2C_NUM);
     return ESP_OK;
 }
 
@@ -98,7 +86,7 @@ esp_err_t init_speaker_amp(void)
 
 esp_err_t init_codec(void)
 {
-    codec_handle = es8311_create(I2C_NUM_0, ES8311_ADDRRES_0);
+    codec_handle = es8311_create(BSP_I2C_NUM, ES8311_ADDRRES_0);
     ESP_RETURN_ON_FALSE(codec_handle != NULL, ESP_FAIL, TAG,
                         "Failed to create ES8311 codec");
 
