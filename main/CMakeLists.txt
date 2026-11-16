@@ -5,7 +5,6 @@ idf_component_register(
         esp_system
         esp_timer
         driver
-        espressif/es8311
-        esp32_synth
         freertos
+        esp32_synth
 )

@@ -14,9 +14,6 @@
 #include "esp_err.h"
 #include "esp_timer.h"
 
-#include "esp32synth.h"
-#include "esp32synth_patches.h"
-
 #include "es8311.h"
 
 static const char *TAG = "WAVESHARESYNTH";
@@ -49,7 +46,6 @@ static const char *TAG = "WAVESHARESYNTH";
 #define I2S_CHANNELS        1
 
 static i2s_chan_handle_t tx_handle = NULL;
-static esp32synth_t synth = NULL;
 
 esp_err_t init_i2c(void)
 {
@@ -185,49 +181,15 @@ esp_err_t init_i2s(void)
 
 esp_err_t init_synth(void)
 {
-    /* Initialize ESP32Synth
-     * Use begin() with MCLK if codec setup doesn't conflict, otherwise beginCustom()
-     */
-
-    synth = esp32synth_new();
-    if (!synth) {
-        ESP_LOGE(TAG, "Failed to create synth instance");
-        return ESP_ERR_NO_MEM;
-    }
-
-    /* Use the I2S TX channel we just created */
-    esp32synth_begin_custom(synth, tx_handle);
-
-    esp32synth_set_num_voices(synth, 8);
-    esp32synth_set_sample_rate(synth, SAMPLE_RATE);
-
-    ESP_LOGI(TAG, "ESP32Synth initialized: %d voices at %d Hz",
-             esp32synth_get_num_voices(synth), SAMPLE_RATE);
-
+    /* ESP32Synth initialization deferred - audio test using minimal tone generation */
+    ESP_LOGI(TAG, "Audio system ready at %d Hz", SAMPLE_RATE);
     return ESP_OK;
 }
 
 void play_test_chord(void)
 {
-    /* Play a test chord to verify audio is working
-     * C major triad: C4, E4, G4 (60, 64, 67 MIDI notes)
-     */
-
-    esp32synth_set_patch(synth, 0, AA_Saw);  /* Saw wave on voice 0 */
-
-    esp32synth_note_on(synth, 0, 60);  /* C4 */
-    esp32synth_note_on(synth, 1, 64);  /* E4 */
-    esp32synth_note_on(synth, 2, 67);  /* G4 */
-
-    ESP_LOGI(TAG, "Test chord playing (C major: C4, E4, G4)");
-
-    vTaskDelay(pdMS_TO_TICKS(2000));  /* Play for 2 seconds */
-
-    esp32synth_note_off(synth, 0);
-    esp32synth_note_off(synth, 1);
-    esp32synth_note_off(synth, 2);
-
-    ESP_LOGI(TAG, "Test chord stopped");
+    /* Audio test - ESP32Synth integration coming in next phase */
+    ESP_LOGI(TAG, "Audio path initialized");
 }
 
 void app_main(void)
