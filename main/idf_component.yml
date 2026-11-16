@@ -1,7 +1,0 @@
-version: "1.0.0"
-description: "Waveshare ESP32-P4 Synth - main application"
-dependencies:
-  esp_timer: "*"
-  driver: "*"
-  freertos: "*"
-  espressif/es8311: "*"

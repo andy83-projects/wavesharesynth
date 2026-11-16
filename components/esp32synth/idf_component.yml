@@ -1,4 +1,0 @@
-version: "1.0.0"
-description: "ESP32 Synth Library"
-dependencies:
-  freertos: "*"
