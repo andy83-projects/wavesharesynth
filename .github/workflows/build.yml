@@ -17,11 +17,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install ESP32-P4 tools
-      run: |
-        . /opt/esp/idf/export.sh
-        idf.py tools-install-all --targets esp32p4
-
     - name: Set target to ESP32-P4
       run: |
         . /opt/esp/idf/export.sh
