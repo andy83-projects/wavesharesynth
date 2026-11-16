@@ -1,0 +1,11 @@
+build/
+sdkconfig
+sdkconfig.old
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.clang_complete
+compile_commands.json
+dependencies.lock
