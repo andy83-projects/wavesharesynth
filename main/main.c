@@ -235,9 +235,11 @@ void app_main(void)
 
     ESP_LOGI(TAG, "=== Boot complete ===");
 
-    /* Play the bounded test chord repeatedly for audible hardware validation. */
+    /* Keep the audio path initialized, but leave playback silent until the UI
+     * provides an explicit sound event.  The repeating chord was only for the
+     * Milestone 1 hardware test. */
+    ESP_LOGI(TAG, "Audio test chord disabled; waiting for UI input");
     while (1) {
-        play_test_chord();
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
