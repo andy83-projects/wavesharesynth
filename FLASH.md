@@ -1,10 +1,10 @@
 # Flashing the Synth to Device
 
-## From GitHub Actions Build
+## From a nas1 or GitHub Actions Build
 
-After GitHub Actions builds the project:
+After the project is built on `nas1` or by GitHub Actions:
 
-1. **Download the artifacts** from the GitHub Actions run:
+1. **Download the artifacts** from `nas1` or the GitHub Actions run:
    - Go to: `https://github.com/YOUR_USERNAME/wavesharesynth/actions`
    - Click the latest successful build
    - Download `wavesharesynth-build` artifact
@@ -14,15 +14,16 @@ After GitHub Actions builds the project:
    ```bash
    # Make sure device is connected to /dev/cu.usbmodem2101
    
-   # Option A: Using idf.py (requires ESP-IDF installed)
-   idf.py -p /dev/cu.usbmodem2101 write_flash @build/flash_args
+   # Option A: Use the generated flash manifest (recommended).
+   # Run this from the extracted artifact/build directory.
+   idf.py -p /dev/cu.usbmodem2101 write_flash @flash_args
    
-   # Option B: Using esptool directly
-   esptool.py -p /dev/cu.usbmodem2101 \
+   # Option B: Use esptool directly
+   esptool.py --chip esp32p4 -p /dev/cu.usbmodem2101 \
      write_flash \
-     0x0 build/bootloader/bootloader.bin \
-     0x8000 build/partition_table/partition-table.bin \
-     0x20000 build/wavesharesynth.bin
+     0x2000 bootloader/bootloader.bin \
+     0x8000 partition_table/partition-table.bin \
+     0x10000 wavesharesynth.bin
    
    # Option C: Using this project's build directory
    cd /path/to/extracted/build
@@ -59,8 +60,14 @@ I (xxx) WAVESHARESYNTH: === Boot complete ===
 - Check device in System Report → USB
 - Try different USB cable or port on your Mac
 
+**"invalid header" after a previous flash attempt**
+- Erase the device once to remove old images flashed at the wrong offsets:
+  `esptool.py --chip esp32p4 -p /dev/cu.usbmodem2101 erase_flash`
+- Flash again using `flash_args` or the explicit offsets above.
+- Do not flash the bootloader at `0x0` or the app at `0x20000`; those offsets are not valid for this ESP32-P4 build.
+
 **Binary too large**
-- The bootloader reserves 0x20000 (128KB) for the app
+- The bootloader is flashed at `0x2000`, the partition table at `0x8000`, and the app at `0x10000`
 - Check build output for size
 
 ## GitHub Actions Setup

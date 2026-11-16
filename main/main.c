@@ -45,6 +45,8 @@ static const char *TAG = "WAVESHARESYNTH";
 #define I2S_CHANNELS        1
 
 static i2s_chan_handle_t tx_handle = NULL;
+static i2c_master_bus_handle_t i2c_bus_handle = NULL;
+static i2c_master_dev_handle_t codec_dev_handle = NULL;
 
 esp_err_t init_i2c(void)
 {
@@ -56,8 +58,7 @@ esp_err_t init_i2c(void)
         .flags.enable_internal_pullup = true,
     };
 
-    i2c_master_bus_handle_t bus_handle = NULL;
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &bus_handle), TAG,
+    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &i2c_bus_handle), TAG,
                         "Failed to create I2C master bus");
 
     ESP_LOGI(TAG, "I2C master initialized on SDA=%d, SCL=%d", I2C_SDA_PIN, I2C_SCL_PIN);
@@ -87,17 +88,9 @@ esp_err_t init_codec(void)
      * Full ES8311 codec driver will be integrated in Milestone 2
      */
 
-    i2c_master_bus_config_t bus_cfg = {
-        .sda_io_num = I2C_SDA_PIN,
-        .scl_io_num = I2C_SCL_PIN,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-
-    i2c_master_bus_handle_t bus_handle = NULL;
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &bus_handle), TAG,
-                        "Failed to create I2C bus for codec");
+    if (i2c_bus_handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -105,8 +98,8 @@ esp_err_t init_codec(void)
         .scl_speed_hz = 400000,
     };
 
-    i2c_master_dev_handle_t dev_handle = NULL;
-    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle), TAG,
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(i2c_bus_handle, &dev_cfg,
+                                                  &codec_dev_handle), TAG,
                         "Failed to add ES8311 device to I2C bus");
 
     ESP_LOGI(TAG, "I2C codec device configured at address 0x%02x", ES8311_I2C_ADDR);
