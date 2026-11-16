@@ -11,11 +11,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: espressif/idf:latest
+      image: espressif/idf:v5.3
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Install ESP32-P4 tools
+      run: |
+        . /opt/esp/idf/export.sh
+        idf.py tools-install-all --targets esp32p4
 
     - name: Set target to ESP32-P4
       run: |
