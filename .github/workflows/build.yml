@@ -11,7 +11,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: espressif/idf:v5.2
+      image: espressif/idf:v6.1
 
     steps:
     - name: Checkout code
@@ -20,12 +20,12 @@ jobs:
     - name: Set target to ESP32-P4
       run: |
         . /opt/esp/idf/export.sh
-        idf.py --preview set-target esp32p4
+        idf.py set-target esp32p4
 
     - name: Build project
       run: |
         . /opt/esp/idf/export.sh
-        idf.py --preview build
+        idf.py build
 
     - name: List build artifacts
       run: |
