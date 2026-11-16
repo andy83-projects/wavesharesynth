@@ -6,5 +6,5 @@ idf_component_register(
         esp_timer
         driver
         freertos
-        esp32_synth
+        esp32synth
 )
