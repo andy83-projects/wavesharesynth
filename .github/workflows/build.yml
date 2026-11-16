@@ -1,0 +1,70 @@
+name: Build ESP32-P4 Synth
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Set target to ESP32-P4
+      run: |
+        cd /workspace
+        idf.py set-target esp32p4
+
+    - name: Build project
+      run: |
+        cd /workspace
+        idf.py build
+
+    - name: List build artifacts
+      run: |
+        ls -lah /workspace/build/
+        find /workspace/build -name "*.bin" -o -name "*.elf"
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: wavesharesynth-build
+        path: |
+          build/bootloader/bootloader.bin
+          build/partition_table/partition-table.bin
+          build/wavesharesynth.bin
+          build/wavesharesynth.elf
+          build/flasher_args.json
+          build/flash_args
+        retention-days: 30
+
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        draft: false
+        prerelease: false
+
+    - name: Upload to Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./build/wavesharesynth.bin
+        asset_name: wavesharesynth.bin
+        asset_content_type: application/octet-stream
