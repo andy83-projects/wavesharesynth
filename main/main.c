@@ -14,8 +14,6 @@
 #include "esp_err.h"
 #include "esp_timer.h"
 
-#include "es8311.h"
-
 static const char *TAG = "WAVESHARESYNTH";
 
 /* Pin configuration - from Waveshare ESP32-P4-WIFI6-Touch-LCD-XC official docs
@@ -84,8 +82,8 @@ esp_err_t init_speaker_amp(void)
 
 esp_err_t init_codec(void)
 {
-    /* Initialize ES8311 codec using Espressif's es8311 component
-     * Based on Waveshare ESP32-P4-WIFI6-Touch-LCD-XC examples
+    /* Milestone 1: Initialize I2C bus for codec communication (probe only)
+     * Full ES8311 codec driver will be integrated in Milestone 2
      */
 
     i2c_master_bus_config_t bus_cfg = {
@@ -110,38 +108,7 @@ esp_err_t init_codec(void)
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle), TAG,
                         "Failed to add ES8311 device to I2C bus");
 
-    /* Create ES8311 codec device and initialize */
-    es8311_handle_t es8311 = NULL;
-    ESP_RETURN_ON_ERROR(es8311_create(dev_handle, &es8311), TAG,
-                        "Failed to create ES8311 handle");
-
-    es8311_clock_config_t clock_cfg = {
-        .mclk_inverted = false,
-        .sclk_inverted = false,
-    };
-
-    ESP_RETURN_ON_ERROR(es8311_init(es8311, &clock_cfg, 16, 16), TAG,
-                        "Failed to initialize ES8311");
-
-    /* Configure for 32 kHz sample rate
-     * MCLK = 12.288 MHz (32 kHz × 384)
-     */
-    uint32_t mclk_freq = 12288000;
-    uint32_t sample_rate = 32000;
-
-    ESP_RETURN_ON_ERROR(es8311_sample_frequency_config(es8311, mclk_freq, sample_rate), TAG,
-                        "Failed to configure sample rate");
-
-    /* Set volume to -20 dB */
-    int8_t volume = -20;
-    ESP_RETURN_ON_ERROR(es8311_voice_volume_set(es8311, volume, NULL), TAG,
-                        "Failed to set volume");
-
-    /* Disable microphone (playback only) */
-    ESP_RETURN_ON_ERROR(es8311_microphone_config(es8311, false), TAG,
-                        "Failed to configure microphone");
-
-    ESP_LOGI(TAG, "ES8311 codec initialized: %d Hz, volume %d dB", sample_rate, volume);
+    ESP_LOGI(TAG, "I2C codec device configured at address 0x%02x", ES8311_I2C_ADDR);
 
     return ESP_OK;
 }
