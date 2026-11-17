@@ -8,6 +8,8 @@
 
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
+#include "bsp/touch.h"
+#include "esp_lcd_touch.h"
 #include "esp_codec_dev.h"
 
 #include "esp_log.h"
@@ -39,6 +41,7 @@ static const char *TAG = "WAVESHARESYNTH";
 static esp_codec_dev_handle_t speaker_codec_handle = NULL;
 static esp_lcd_panel_handle_t display_panel = NULL;
 static esp_lcd_panel_io_handle_t display_io = NULL;
+static esp_lcd_touch_handle_t touch_handle = NULL;
 
 esp_err_t init_i2c(void)
 {
@@ -129,6 +132,35 @@ esp_err_t init_display(void)
     return ESP_OK;
 }
 
+static void touch_poll_task(void *arg)
+{
+    (void)arg;
+    esp_lcd_touch_point_data_t point = {0};
+
+    while (true) {
+        esp_err_t ret = esp_lcd_touch_read_data(touch_handle);
+        if (ret == ESP_OK) {
+            uint8_t point_count = 0;
+            ret = esp_lcd_touch_get_data(touch_handle, &point, &point_count, 1);
+            if (ret == ESP_OK && point_count > 0) {
+                ESP_LOGI(TAG, "Touch: x=%u y=%u", point.x, point.y);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+esp_err_t init_touch(void)
+{
+    ESP_RETURN_ON_ERROR(bsp_touch_new(NULL, &touch_handle), TAG,
+                        "Failed to initialize GT911-compatible touch");
+    ESP_RETURN_ON_ERROR(xTaskCreate(touch_poll_task, "touch_poll", 4096, NULL, 5, NULL) == pdPASS
+                            ? ESP_OK : ESP_ERR_NO_MEM,
+                        TAG, "Failed to start touch polling task");
+    ESP_LOGI(TAG, "Touch initialized; polling GT911-compatible controller");
+    return ESP_OK;
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "=== Waveshare Synth Boot ===");
@@ -144,6 +176,11 @@ void app_main(void)
      * validation during Milestone 2. */
     if (init_display() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize display");
+        return;
+    }
+
+    if (init_touch() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize touch");
         return;
     }
 
