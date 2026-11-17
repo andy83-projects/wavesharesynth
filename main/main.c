@@ -11,6 +11,8 @@
 #include "bsp/touch.h"
 #include "esp_lcd_touch.h"
 #include "esp_codec_dev.h"
+#include "esp_lv_adapter.h"
+#include "lvgl.h"
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -42,6 +44,8 @@ static esp_codec_dev_handle_t speaker_codec_handle = NULL;
 static esp_lcd_panel_handle_t display_panel = NULL;
 static esp_lcd_panel_io_handle_t display_io = NULL;
 static esp_lcd_touch_handle_t touch_handle = NULL;
+static lv_display_t *lvgl_display = NULL;
+static lv_obj_t *touch_status_label = NULL;
 
 esp_err_t init_i2c(void)
 {
@@ -124,30 +128,35 @@ esp_err_t init_display(void)
     ESP_RETURN_ON_ERROR(bsp_display_backlight_on(), TAG,
                         "Failed to enable display backlight");
 
-    ESP_RETURN_ON_ERROR(esp_lcd_dpi_panel_set_pattern(
-                            display_panel, MIPI_DSI_PATTERN_BAR_VERTICAL), TAG,
-                        "Failed to set display test pattern");
+    esp_lv_adapter_config_t lvgl_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+    ESP_RETURN_ON_ERROR(esp_lv_adapter_init(&lvgl_cfg), TAG,
+                        "Failed to initialize LVGL adapter");
 
-    ESP_LOGI(TAG, "4C display initialized: 720x720 color-bar test pattern");
+    esp_lv_adapter_display_config_t display_cfg =
+        ESP_LV_ADAPTER_DISPLAY_MIPI_DEFAULT_CONFIG(
+            display_panel, display_io, 720, 720, ESP_LV_ADAPTER_ROTATE_0);
+    display_cfg.profile.buffer_height = 60;
+    lvgl_display = esp_lv_adapter_register_display(&display_cfg);
+    ESP_RETURN_ON_FALSE(lvgl_display != NULL, ESP_FAIL, TAG,
+                        "Failed to register LVGL display");
+
+    ESP_LOGI(TAG, "4C display initialized: 720x720 LVGL display");
     return ESP_OK;
 }
 
-static void touch_poll_task(void *arg)
+static void touch_event_cb(lv_event_t *event)
 {
-    (void)arg;
-    esp_lcd_touch_point_data_t point = {0};
-
-    while (true) {
-        esp_err_t ret = esp_lcd_touch_read_data(touch_handle);
-        if (ret == ESP_OK) {
-            uint8_t point_count = 0;
-            ret = esp_lcd_touch_get_data(touch_handle, &point, &point_count, 1);
-            if (ret == ESP_OK && point_count > 0) {
-                ESP_LOGI(TAG, "Touch: x=%u y=%u", point.x, point.y);
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(20));
+    if (lv_event_get_code(event) != LV_EVENT_PRESSED) {
+        return;
     }
+
+    lv_indev_t *indev = lv_indev_get_active();
+    lv_point_t point = {0};
+    if (indev != NULL) {
+        lv_indev_get_point(indev, &point);
+    }
+    lv_label_set_text_fmt(touch_status_label, "Touch: %d, %d", point.x, point.y);
+    ESP_LOGI(TAG, "LVGL touch event: x=%d y=%d", point.x, point.y);
 }
 
 esp_err_t init_touch(void)
@@ -161,11 +170,40 @@ esp_err_t init_touch(void)
     };
     ESP_RETURN_ON_ERROR(bsp_touch_new(&touch_cfg, &touch_handle), TAG,
                         "Failed to initialize GT911-compatible touch");
-    ESP_RETURN_ON_ERROR(xTaskCreate(touch_poll_task, "touch_poll", 4096, NULL, 5, NULL) == pdPASS
-                            ? ESP_OK : ESP_ERR_NO_MEM,
-                        TAG, "Failed to start touch polling task");
+    const esp_lv_adapter_touch_config_t lvgl_touch_cfg =
+        ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(lvgl_display, touch_handle);
+    ESP_RETURN_ON_FALSE(esp_lv_adapter_register_touch(&lvgl_touch_cfg) != NULL,
+                        ESP_FAIL, TAG, "Failed to register LVGL touch input");
     ESP_LOGI(TAG, "Touch initialized; polling GT911-compatible controller");
     return ESP_OK;
+}
+
+static void init_ui(void)
+{
+    lv_obj_t *screen = lv_screen_active();
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x101318), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+
+    lv_obj_t *title = lv_label_create(screen);
+    lv_label_set_text(title, "WAVESHARE SYNTH");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 36);
+
+    lv_obj_t *subtitle = lv_label_create(screen);
+    lv_label_set_text(subtitle, "LVGL UI foundation");
+    lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 76);
+
+    lv_obj_t *touch_surface = lv_btn_create(screen);
+    lv_obj_set_size(touch_surface, 560, 430);
+    lv_obj_align(touch_surface, LV_ALIGN_CENTER, 0, 30);
+    lv_obj_add_event_cb(touch_surface, touch_event_cb, LV_EVENT_PRESSED, NULL);
+
+    lv_obj_t *surface_label = lv_label_create(touch_surface);
+    lv_label_set_text(surface_label, "TOUCH SURFACE");
+    lv_obj_center(surface_label);
+
+    touch_status_label = lv_label_create(screen);
+    lv_label_set_text(touch_status_label, "Touch: --, --");
+    lv_obj_align(touch_status_label, LV_ALIGN_BOTTOM_MID, 0, -36);
 }
 
 void app_main(void)
@@ -190,6 +228,13 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to initialize touch");
         return;
     }
+
+    init_ui();
+    if (esp_lv_adapter_start() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start LVGL adapter");
+        return;
+    }
+    ESP_LOGI(TAG, "LVGL UI initialized; touch events routed to widgets");
 
     if (init_i2s() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize I2S");
