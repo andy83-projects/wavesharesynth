@@ -152,7 +152,14 @@ static void touch_poll_task(void *arg)
 
 esp_err_t init_touch(void)
 {
-    ESP_RETURN_ON_ERROR(bsp_touch_new(NULL, &touch_handle), TAG,
+    const bsp_touch_config_t touch_cfg = {
+        .flags = {
+            .swap_xy = 0,
+            .mirror_x = 0,
+            .mirror_y = 0,
+        },
+    };
+    ESP_RETURN_ON_ERROR(bsp_touch_new(&touch_cfg, &touch_handle), TAG,
                         "Failed to initialize GT911-compatible touch");
     ESP_RETURN_ON_ERROR(xTaskCreate(touch_poll_task, "touch_poll", 4096, NULL, 5, NULL) == pdPASS
                             ? ESP_OK : ESP_ERR_NO_MEM,
