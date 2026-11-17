@@ -35,7 +35,7 @@ Mockup: `docs/mockups/pad.html`
 Behaviour:
 - Lifting the finger releases the sound unless Hold is on (Hold latches the last position).
 - X/Y are normalised over 60–660 px; Y is inverted (top = max).
-- Long-press the centre for 600 ms → instrument picker.
+- Tap the labelled `Instrument` control at the top of the outer ring → instrument picker.
 - Touch is sampled at ≥ 100 Hz on Core 0. Values reach the synth only through the
   seqlock → `applyUiState()` path on Core 1. Smooth parameters over ~5 ms on the audio side.
 

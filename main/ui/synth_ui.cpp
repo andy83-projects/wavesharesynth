@@ -9,24 +9,25 @@ namespace {
 
 struct Program {
     const char *name;
+    const char *ring_name;
     const char *x_label;
     const char *y_label;
     bool lanes;
 };
 
 static const Program kPrograms[UI_PROG_COUNT] = {
-    {"Filter sweep", "Cutoff", "Resonance", false},
-    {"Band sweep", "Center", "Width", false},
-    {"Acid", "Cutoff", "Resonance", false},
-    {"Touch scale", "Note", "Filter", true},
-    {"FM bell", "Ratio", "Mod index", false},
-    {"Arp", "Rate", "Span", false},
-    {"Vibrato", "Rate", "Depth", false},
-    {"Tremolo gate", "Rate", "Depth", false},
-    {"PWM lead", "Note", "Pulse width", true},
-    {"Bitcrush", "Bits", "Cutoff", false},
-    {"Pluck", "Note", "Damping", true},
-    {"Organ", "Note", "Reverb", true},
+    {"Filter sweep", "Filter", "Cutoff", "Resonance", false},
+    {"Band sweep", "Band", "Center", "Width", false},
+    {"Acid", "Acid", "Cutoff", "Resonance", false},
+    {"Touch scale", "Scale", "Note", "Filter", true},
+    {"FM bell", "FM bell", "Ratio", "Mod index", false},
+    {"Arp", "Arp", "Rate", "Span", false},
+    {"Vibrato", "Vibrato", "Rate", "Depth", false},
+    {"Tremolo gate", "Tremolo", "Rate", "Depth", false},
+    {"PWM lead", "PWM", "Note", "Pulse width", true},
+    {"Bitcrush", "Crush", "Bits", "Cutoff", false},
+    {"Pluck", "Pluck", "Note", "Damping", true},
+    {"Organ", "Organ", "Note", "Reverb", true},
 };
 
 struct MenuGroup {
@@ -75,8 +76,6 @@ struct UiState {
     bool hold = false;
     bool touching = false;
     bool wheel = false;
-    bool long_pressed = false;
-    bool pad_moved = false;
     lv_point_t press_point{};
     float last_angle = 0.0f;
     float wheel_degrees = 0.0f;
@@ -213,37 +212,10 @@ static void pad_event(lv_event_t *event)
     lv_indev_t *indev = lv_indev_get_act();
     lv_point_t point{};
     if(indev) lv_indev_get_point(indev, &point);
-
-    if(code == LV_EVENT_LONG_PRESSED) {
-        const int dx = point.x - g_ui.press_point.x;
-        const int dy = point.y - g_ui.press_point.y;
-        const int start_dx = g_ui.press_point.x - UI_CX;
-        const int start_dy = g_ui.press_point.y - UI_CY;
-        const bool started_near_center =
-            (start_dx * start_dx + start_dy * start_dy) <= (100 * 100);
-        if(!g_ui.pad_moved && started_near_center && (dx * dx + dy * dy) <= (20 * 20)) {
-            g_ui.long_pressed = true;
-            lv_obj_clear_flag(g_ui.picker, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
-            if(g_ui.audio.note_off) g_ui.audio.note_off();
-        }
-        return;
-    }
     if(code != LV_EVENT_PRESSED && code != LV_EVENT_PRESSING && code != LV_EVENT_RELEASED) return;
-
-    if(code == LV_EVENT_PRESSED) {
-        g_ui.press_point = point;
-        g_ui.pad_moved = false;
-    } else if(code == LV_EVENT_PRESSING) {
-        const int dx = point.x - g_ui.press_point.x;
-        const int dy = point.y - g_ui.press_point.y;
-        if((dx * dx + dy * dy) > (20 * 20)) g_ui.pad_moved = true;
-    }
     if(code == LV_EVENT_RELEASED) {
-        if(!g_ui.long_pressed && !g_ui.hold && g_ui.audio.note_off) g_ui.audio.note_off();
-        g_ui.long_pressed = false;
+        if(!g_ui.hold && g_ui.audio.note_off) g_ui.audio.note_off();
         g_ui.touching = false;
-        g_ui.pad_moved = false;
         if(!g_ui.hold) hide(g_ui.touch_halo), hide(g_ui.touch_core), hide(g_ui.touch_dot),
             hide(g_ui.cross_x), hide(g_ui.cross_y);
         return;
@@ -252,6 +224,14 @@ static void pad_event(lv_event_t *event)
     set_touch_point(point.x, point.y);
     add_trail(point.x, point.y);
     set_pad_audio(point.x, point.y);
+}
+
+static void open_picker_event(lv_event_t *event)
+{
+    if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    lv_obj_clear_flag(g_ui.picker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
+    if(g_ui.audio.note_off) g_ui.audio.note_off();
 }
 
 static void hold_event(lv_event_t *event)
@@ -423,7 +403,30 @@ static void create_pad(void)
         lv_obj_set_style_arc_opa(arc, i == 0 ? LV_OPA_COVER : UI_OPA_SEG_IDLE, LV_PART_INDICATOR);
         lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
         lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+
+        lv_obj_t *ring_label = label(g_ui.pad, kPrograms[i].ring_name, UI_FONT_HINT, UI_OPA_TEXT_LABEL);
+        lv_obj_set_width(ring_label, 78);
+        lv_obj_set_style_text_align(ring_label, LV_TEXT_ALIGN_CENTER, 0);
+        float angle = ((float)i * UI_PROG_SEG_DEG - 90.0f) * (float)M_PI / 180.0f;
+        lv_obj_set_pos(ring_label,
+                       (int)(UI_CX + cosf(angle) * 320.0f - 39),
+                       (int)(UI_CY + sinf(angle) * 320.0f - 9));
     }
+
+    lv_obj_t *instrument = lv_obj_create(g_ui.pad);
+    style_plain(instrument);
+    lv_obj_set_size(instrument, 150, 30);
+    lv_obj_set_pos(instrument, UI_CX - 75, 3);
+    lv_obj_add_event_cb(instrument, open_picker_event, LV_EVENT_CLICKED, nullptr);
+    lv_obj_set_style_radius(instrument, 15, 0);
+    lv_obj_set_style_border_width(instrument, 1, 0);
+    lv_obj_set_style_border_color(instrument, col(UI_COL_ACCENT), 0);
+    lv_obj_set_style_border_opa(instrument, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(instrument, col(UI_COL_BG), 0);
+    lv_obj_set_style_bg_opa(instrument, LV_OPA_COVER, 0);
+    lv_obj_t *instrument_label = label(instrument, "Instrument", UI_FONT_HINT, UI_OPA_TEXT_TITLE);
+    lv_obj_set_style_text_color(instrument_label, col(UI_COL_ACCENT_LIGHT), 0);
+    lv_obj_center(instrument_label);
 
     g_ui.title = label(g_ui.pad, "", UI_FONT_TITLE, UI_OPA_TEXT_TITLE);
     lv_obj_align(g_ui.title, LV_ALIGN_TOP_MID, 0, UI_PAD_TITLE_Y - 18);

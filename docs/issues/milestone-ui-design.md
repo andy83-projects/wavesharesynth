@@ -21,7 +21,7 @@ Build the two UI screens (pad + instrument picker) on the device so they match t
 - Touch point (halo + core + dot) with crosshair lines.
 - Light trail as a **pool of 20 reused circle objects with `lv_anim` fades**. Don't redraw the full canvas.
 - Scale lanes with X snapping for note programs (4, 9, 11, 12).
-- Lift releases the sound unless Hold is on. Long-press the centre (600 ms) opens the picker.
+- Lift releases the sound unless Hold is on. Tap the labelled `Instrument` control on the outer ring to open the picker; holding or dragging on the pad never opens it.
 
 ### 2. Instrument picker (iPod-style click wheel)
 - **Silent**: no scroll click, no auto-audition. The only sound is an explicit Audition tap.
