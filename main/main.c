@@ -123,6 +123,13 @@ void app_main(void)
         return;
     }
 
+    /* Bring up the panel before audio so a codec failure cannot mask display
+     * validation during Milestone 2. */
+    if (init_display() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize display");
+        return;
+    }
+
     if (init_i2s() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize I2S");
         return;
@@ -135,11 +142,6 @@ void app_main(void)
 
     if (init_synth() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize synth");
-        return;
-    }
-
-    if (init_display() != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize display");
         return;
     }
 
