@@ -82,6 +82,15 @@ static constexpr const char *kNvsNotesKey = "notes_v1";
 /* Per-wedge amplitude envelope; defaults to the instrument's factory envelope. */
 static synth_envelope_t g_env[UI_PROG_COUNT];
 static constexpr const char *kNvsEnvKey = "env_v1";
+
+/* Per-wedge volume (0-100%), applied to its live notes, layers and loop. */
+static uint8_t g_level[UI_PROG_COUNT];
+static constexpr const char *kNvsLevelKey = "level_v1";
+
+static uint16_t wedge_volume(uint16_t volume, uint8_t wedge)
+{
+    return (uint16_t)((uint32_t)volume * g_level[wedge] / 100);
+}
 static const uint16_t kTimeSteps[] = {0, 1, 2, 5, 10, 20, 35, 50, 75, 100, 150, 200, 300, 450,
                                       600, 800, 1000, 1250, 1500, 2000, 3000};
 static constexpr int kTimeStepCount = sizeof(kTimeSteps) / sizeof(kTimeSteps[0]);
@@ -116,6 +125,22 @@ static HeldVoice g_layers[kLayerSlots];
 static LayerGroup g_groups[kLayerSlots];
 static bool g_wedge_hold[UI_PROG_COUNT];
 static bool g_wedge_arp[UI_PROG_COUNT];
+
+/* Tap-to-record sequencer: each wedge records up to 16 steps (one per pad tap,
+ * rests from the Rest pill) and loops them on its instrument. */
+enum SeqState : uint8_t { SEQ_OFF, SEQ_REC, SEQ_PLAY };
+struct SeqPattern {
+    uint8_t length;
+    synth_seq_step_t steps[SYNTH_UI_SEQ_STEPS];
+};
+static_assert(SYNTH_UI_MAX_SEQUENCES == UI_PROG_COUNT, "one sequence per wedge");
+static SeqPattern g_patterns[UI_PROG_COUNT];
+static SeqState g_seq_state[UI_PROG_COUNT];
+static uint32_t g_seq_start[UI_PROG_COUNT];
+static uint32_t g_seq_trigger[UI_PROG_COUNT];
+/* Muted loops keep their place on the beat grid and just stay silent. */
+static bool g_seq_muted[UI_PROG_COUNT];
+static constexpr const char *kNvsSeqKey = "seq_v1";
 
 /* Global arp tempo and tempo-synced echo, edited on the FX page. */
 static uint16_t g_bpm = 120;
@@ -197,6 +222,8 @@ struct UiState {
     lv_obj_t *hold_label = nullptr;
     lv_obj_t *arp_button = nullptr;
     lv_obj_t *arp_label = nullptr;
+    lv_obj_t *seq_button = nullptr;
+    lv_obj_t *seq_label = nullptr;
     lv_obj_t *touch_halo = nullptr;
     lv_obj_t *touch_core = nullptr;
     lv_obj_t *touch_dot = nullptr;
@@ -397,11 +424,57 @@ static void send_fx(void)
     if(g_ui.audio.set_delay) g_ui.audio.set_delay(time_ms, g_fx.feedback_pct, g_fx.mix_pct);
 }
 
+static void load_patterns(void)
+{
+    nvs_handle_t nvs;
+    if(nvs_open(kNvsNamespace, NVS_READONLY, &nvs) != ESP_OK) return;
+    SeqPattern stored[UI_PROG_COUNT];
+    size_t size = sizeof(stored);
+    if(nvs_get_blob(nvs, kNvsSeqKey, stored, &size) == ESP_OK && size == sizeof(stored)) {
+        for(uint8_t i = 0; i < UI_PROG_COUNT; ++i) if(stored[i].length <= SYNTH_UI_SEQ_STEPS) g_patterns[i] = stored[i];
+    }
+    nvs_close(nvs);
+}
+
+static void save_patterns(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &nvs);
+    if(err == ESP_OK) {
+        err = nvs_set_blob(nvs, kNvsSeqKey, g_patterns, sizeof(g_patterns));
+        if(err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if(err != ESP_OK) ESP_LOGE("SYNTH_UI", "Saving sequences failed: %s", esp_err_to_name(err));
+}
+
+/* Sequences play the wedge's current instrument and envelope. */
+static void send_sequence(uint8_t wedge)
+{
+    if(!g_ui.audio.set_sequence) return;
+    synth_ui_sequence_t seq{};
+    seq.playing = g_seq_state[wedge] == SEQ_PLAY && !g_seq_muted[wedge];
+    seq.length = g_patterns[wedge].length;
+    seq.preset = g_slots[wedge].preset;
+    seq.envelope = g_env[wedge];
+    seq.start_step = g_seq_start[wedge];
+    seq.base_trigger = g_seq_trigger[wedge];
+    memcpy(seq.steps, g_patterns[wedge].steps, sizeof(seq.steps));
+    for(auto &step : seq.steps) step.volume = wedge_volume(step.volume, wedge);
+    g_ui.audio.set_sequence(wedge, &seq);
+}
+
 static void load_env(void)
 {
     for(uint8_t i = 0; i < UI_PROG_COUNT; ++i) g_env[i] = preset_envelope(g_slots[i].preset);
+    memset(g_level, 100, sizeof(g_level));
     nvs_handle_t nvs;
     if(nvs_open(kNvsNamespace, NVS_READONLY, &nvs) != ESP_OK) return;
+    uint8_t levels[UI_PROG_COUNT];
+    size_t level_size = sizeof(levels);
+    if(nvs_get_blob(nvs, kNvsLevelKey, levels, &level_size) == ESP_OK && level_size == sizeof(levels)) {
+        for(uint8_t i = 0; i < UI_PROG_COUNT; ++i) if(levels[i] <= 100) g_level[i] = levels[i];
+    }
     synth_envelope_t stored[UI_PROG_COUNT];
     size_t size = sizeof(stored);
     if(nvs_get_blob(nvs, kNvsEnvKey, stored, &size) == ESP_OK && size == sizeof(stored)) {
@@ -416,6 +489,7 @@ static void save_env(void)
     esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &nvs);
     if(err == ESP_OK) {
         err = nvs_set_blob(nvs, kNvsEnvKey, g_env, sizeof(g_env));
+        if(err == ESP_OK) err = nvs_set_blob(nvs, kNvsLevelKey, g_level, sizeof(g_level));
         if(err == ESP_OK) err = nvs_commit(nvs);
         nvs_close(nvs);
     }
@@ -641,6 +715,9 @@ static void publish_contacts(void)
     } else {
         lv_label_set_text_fmt(g_ui.readout, "%u note%s", count, count == 1 ? "" : "s");
     }
+    if(g_seq_state[g_ui.program] == SEQ_REC) {
+        lv_label_set_text_fmt(g_ui.readout, "REC - step %u/%u", g_patterns[g_ui.program].length + 1, SYNTH_UI_SEQ_STEPS);
+    }
     if(g_ui.acid_sweep) lv_label_set_text_fmt(g_ui.readout, "ACID%s - %u Hz - res %u%%",
         g_ui.arp ? " ARP" : "", g_ui.acid_cutoff, g_ui.acid_resonance * 100 / 255);
 
@@ -651,12 +728,14 @@ static void publish_contacts(void)
         if(!notes[i].pressed) continue;
         voices[i] = {notes[i], g_ui.active_preset, g_env[g_ui.program],
                      (uint8_t)(g_ui.arp ? 1 : 0), g_ui.arp_clock.started_ms, g_ui.arp_clock.base_trigger};
+        voices[i].note.volume = wedge_volume(notes[i].volume, g_ui.program);
     }
     for(unsigned i = 0; i < kLayerSlots; ++i) {
         if(!g_layers[i].used) continue;
         const LayerGroup &group = g_groups[g_layers[i].group];
         synth_ui_voice_t &voice = voices[SYNTH_UI_MAX_CONTACTS + i];
         voice = g_layers[i].voice;
+        voice.note.volume = wedge_volume(voice.note.volume, group.wedge);
         /* Arp group ids: 1 = live contacts, 2.. = background layer groups. */
         voice.arp_group = group.arp ? (uint8_t)(2 + g_layers[i].group) : 0;
         voice.arp_start_ms = group.clock.started_ms;
@@ -667,14 +746,126 @@ static void publish_contacts(void)
 
 static void update_arp_button(void)
 {
+    /* While recording a sequence the Arp pill becomes Rest. */
+    if(g_seq_state[g_ui.program] == SEQ_REC) {
+        lv_label_set_text(g_ui.arp_label, "Rest");
+        lv_obj_set_style_bg_color(g_ui.arp_button, col(UI_COL_FG), 0);
+        lv_obj_set_style_bg_opa(g_ui.arp_button, 150, 0);
+        return;
+    }
     lv_label_set_text(g_ui.arp_label, g_ui.arp_enabled ? "Arp on" : "Arp off");
     lv_obj_set_style_bg_color(g_ui.arp_button, col(g_ui.arp_enabled ? UI_COL_ACCENT : UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.arp_button, g_ui.arp_enabled ? LV_OPA_COVER : 150, 0);
 }
 
+static void update_hold_button(void);
+
+static void update_seq_button(void)
+{
+    const uint8_t w = g_ui.program;
+    const unsigned length = g_patterns[w].length;
+    switch(g_seq_state[w]) {
+    case SEQ_REC:
+        lv_label_set_text_fmt(g_ui.seq_label, "Rec %u", length);
+        lv_obj_set_style_bg_color(g_ui.seq_button, col(UI_COL_REC), 0);
+        lv_obj_set_style_bg_opa(g_ui.seq_button, LV_OPA_COVER, 0);
+        break;
+    case SEQ_PLAY:
+        lv_label_set_text_fmt(g_ui.seq_label, "Seq %u", length);
+        lv_obj_set_style_bg_color(g_ui.seq_button, col(UI_COL_ACCENT), 0);
+        lv_obj_set_style_bg_opa(g_ui.seq_button, LV_OPA_COVER, 0);
+        break;
+    case SEQ_OFF:
+        if(length) lv_label_set_text_fmt(g_ui.seq_label, "Seq %u", length);
+        else lv_label_set_text(g_ui.seq_label, "Seq");
+        lv_obj_set_style_bg_color(g_ui.seq_button, col(UI_COL_FG), 0);
+        lv_obj_set_style_bg_opa(g_ui.seq_button, 150, 0);
+        break;
+    }
+}
+
+/* Recording ends in playback (starting on the next 16th of the shared grid),
+ * or off if nothing was recorded. */
+static void start_playing(uint8_t wedge)
+{
+    g_seq_state[wedge] = SEQ_PLAY;
+    g_seq_muted[wedge] = false;
+    g_seq_start[wedge] = now_ms() / (15000u / g_bpm) + 1;
+    g_seq_trigger[wedge] = ++g_ui.trigger;
+    send_sequence(wedge);
+}
+
+static void start_recording(uint8_t wedge)
+{
+    g_patterns[wedge].length = 0;
+    g_seq_state[wedge] = SEQ_REC;
+    send_sequence(wedge);
+}
+
+static void finish_recording(uint8_t wedge)
+{
+    save_patterns();  /* an empty recording clears the saved loop */
+    ESP_LOGI("SYNTH_UI", "Wedge %u sequence: %u steps", wedge + 1, g_patterns[wedge].length);
+    if(g_patterns[wedge].length) {
+        start_playing(wedge);
+    } else {
+        g_seq_state[wedge] = SEQ_OFF;
+        send_sequence(wedge);
+    }
+}
+
+static void record_step(uint32_t frequency_centi_hz, uint16_t volume, uint8_t flags)
+{
+    const uint8_t w = g_ui.program;
+    SeqPattern &pattern = g_patterns[w];
+    if(g_seq_state[w] != SEQ_REC || pattern.length >= SYNTH_UI_SEQ_STEPS) return;
+    pattern.steps[pattern.length++] = {frequency_centi_hz, volume, flags};
+    if(pattern.length == SYNTH_UI_SEQ_STEPS) {
+        finish_recording(w);
+        update_arp_button();
+        update_hold_button();
+    }
+    update_seq_button();
+}
+
+/* Tap: play/stop the saved loop (record if there is none; finish if recording).
+ * Long-press: record a new loop over the old one. */
+static void seq_event(lv_event_t *event)
+{
+    const lv_event_code_t code = lv_event_get_code(event);
+    if(code != LV_EVENT_SHORT_CLICKED && code != LV_EVENT_LONG_PRESSED) return;
+    const uint8_t w = g_ui.program;
+    if(code == LV_EVENT_LONG_PRESSED) {
+        if(g_seq_state[w] == SEQ_REC) return;
+        start_recording(w);
+    } else {
+        switch(g_seq_state[w]) {
+        case SEQ_OFF:
+            if(g_patterns[w].length) start_playing(w);
+            else start_recording(w);
+            break;
+        case SEQ_REC:
+            finish_recording(w);
+            break;
+        case SEQ_PLAY:
+            g_seq_state[w] = SEQ_OFF;
+            send_sequence(w);
+            break;
+        }
+    }
+    ESP_LOGI("SYNTH_UI", "Wedge %u sequencer state=%u", w + 1, g_seq_state[w]);
+    update_seq_button();
+    update_arp_button();
+    update_hold_button();
+}
+
 static void arp_event(lv_event_t *event)
 {
     if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    if(g_seq_state[g_ui.program] == SEQ_REC) {
+        record_step(0, 0, 0);
+        return;
+    }
     g_ui.arp_enabled = !g_ui.arp_enabled;
     g_ui.arp = false;
     update_arp_button();
@@ -736,6 +927,15 @@ static void release_layers(uint8_t wedge)
 
 static void update_hold_button(void)
 {
+    /* While this wedge's loop plays, the Hold pill becomes its Mute. */
+    if(g_seq_state[g_ui.program] == SEQ_PLAY) {
+        const bool muted = g_seq_muted[g_ui.program];
+        lv_label_set_text(g_ui.hold_label, muted ? "Muted" : "Mute");
+        lv_obj_set_style_bg_color(g_ui.hold_button, col(muted ? UI_COL_REC : UI_COL_FG), 0);
+        lv_obj_set_style_bg_opa(g_ui.hold_button, muted ? LV_OPA_COVER : 150, 0);
+        return;
+    }
+    lv_label_set_text(g_ui.hold_label, "Hold");
     lv_obj_set_style_bg_color(g_ui.hold_button, col(g_ui.hold ? UI_COL_ACCENT : UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.hold_button, g_ui.hold ? LV_OPA_COVER : 150, 0);
 }
@@ -750,6 +950,7 @@ static uint8_t wedge_at(const lv_point_t &point)
 static void apply_slot(uint8_t wedge)
 {
     if(wedge != g_ui.program) {
+        if(g_seq_state[g_ui.program] == SEQ_REC) finish_recording(g_ui.program);
         detach_held_notes();
         g_wedge_hold[g_ui.program] = g_ui.hold;
         g_ui.hold = g_wedge_hold[wedge];
@@ -757,7 +958,6 @@ static void apply_slot(uint8_t wedge)
         g_wedge_arp[g_ui.program] = g_ui.arp_enabled;
         g_ui.arp_enabled = g_wedge_arp[wedge];
         g_ui.arp = false;
-        update_arp_button();
     }
     g_ui.program = wedge;
     g_ui.active_preset = g_slots[wedge].preset;
@@ -765,6 +965,8 @@ static void apply_slot(uint8_t wedge)
     if(g_ui.audio.select_preset) g_ui.audio.select_preset(g_ui.active_preset);
     ESP_LOGI("SYNTH_UI", "Wedge %u: %s (preset %u)", wedge + 1, g_slots[wedge].name, g_ui.active_preset);
     update_pad_text();
+    if(g_ui.arp_button) update_arp_button();
+    if(g_ui.seq_button) update_seq_button();
     publish_contacts();
 }
 
@@ -779,7 +981,7 @@ static void update_picker_rows(void);
 enum EditField : uint8_t {
     F_KEY, F_SCALE, F_LOW, F_OCTAVES, F_TEMPO,
     F_ATTACK, F_DECAY, F_SUSTAIN, F_RELEASE, F_FILTER_DECAY,
-    F_DELAY, F_FEEDBACK, F_MIX, F_NONE
+    F_LEVEL, F_DELAY, F_FEEDBACK, F_MIX, F_NONE
 };
 static constexpr uint8_t kEditRows = 5;
 static constexpr uintptr_t kEditDone = 0xFF, kEditTab = 0xF0;  /* kEditTab + page index */
@@ -790,8 +992,8 @@ static const EditField *edit_fields(void)
 {
     static const EditField notes[kEditRows] = {F_KEY, F_SCALE, F_LOW, F_OCTAVES, F_NONE};
     static const EditField fx[kEditRows] = {F_TEMPO, F_DELAY, F_FEEDBACK, F_MIX, F_NONE};
-    static const EditField sound[kEditRows] = {F_ATTACK, F_DECAY, F_SUSTAIN, F_RELEASE, F_NONE};
-    static const EditField acid[kEditRows] = {F_DECAY, F_FILTER_DECAY, F_RELEASE, F_NONE, F_NONE};
+    static const EditField sound[kEditRows] = {F_ATTACK, F_DECAY, F_SUSTAIN, F_RELEASE, F_LEVEL};
+    static const EditField acid[kEditRows] = {F_DECAY, F_FILTER_DECAY, F_RELEASE, F_LEVEL, F_NONE};
     if(g_ui.notes_page == 0) return notes;
     if(g_ui.notes_page == 2) return fx;
     return is_acid_preset(g_slots[g_ui.notes_slot].preset) ? acid : sound;
@@ -838,6 +1040,7 @@ static void update_notes_editor(void)
         case F_DELAY: snprintf(text, sizeof(text), "Echo  %s", kDelayDivisions[g_fx.division].name); break;
         case F_FEEDBACK: snprintf(text, sizeof(text), "Repeats  %u%%", g_fx.feedback_pct); break;
         case F_MIX: snprintf(text, sizeof(text), "Echo mix  %u%%", g_fx.mix_pct); break;
+        case F_LEVEL: snprintf(text, sizeof(text), "Volume  %u%%", g_level[g_ui.notes_slot]); break;
         case F_NONE: break;
         }
         lv_label_set_text(g_ui.notes_values[row], text);
@@ -859,6 +1062,7 @@ static void open_notes_editor(uint8_t wedge)
     lv_obj_add_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
     hide(g_ui.hold_button);
     hide(g_ui.arp_button);
+    hide(g_ui.seq_button);
     if(g_ui.audio.note_off) g_ui.audio.note_off();
     ESP_LOGI("SYNTH_UI", "Wedge editor opened for wedge %u", wedge + 1);
 }
@@ -876,6 +1080,7 @@ static void notes_button_event(lv_event_t *event)
         lv_obj_clear_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
         show(g_ui.hold_button);
         show(g_ui.arp_button);
+        show(g_ui.seq_button);
         update_pad_text();
         ESP_LOGI("SYNTH_UI", "Wedge %u: %s %s oct %u x%u; env A%u D%u S%u R%u F%u", g_ui.notes_slot + 1,
                  kNoteNames[n.root], kScales[n.scale].name, n.low_octave, n.octaves,
@@ -923,11 +1128,18 @@ static void notes_button_event(lv_event_t *event)
         if(pct >= 0 && pct <= 100) g_fx.mix_pct = (uint8_t)pct;
         break;
     }
+    case F_LEVEL: {
+        const int pct = g_level[g_ui.notes_slot] + dir * 10;
+        if(pct >= 0 && pct <= 100) g_level[g_ui.notes_slot] = (uint8_t)pct;
+        publish_contacts();  /* re-level this wedge's held layers right away */
+        break;
+    }
     case F_NONE: break;
     }
     send_fx();
     /* Envelope edits apply live when this wedge is the one playing. */
     if(g_ui.notes_slot == g_ui.program && g_ui.audio.set_envelope) g_ui.audio.set_envelope(&e);
+    send_sequence(g_ui.notes_slot);
     update_notes_editor();
 }
 
@@ -991,6 +1203,7 @@ static void open_picker(uint8_t wedge)
     /* Hold/Arp live on the screen, not the pad, so hide them explicitly. */
     hide(g_ui.hold_button);
     hide(g_ui.arp_button);
+    hide(g_ui.seq_button);
     if(g_ui.audio.note_off) g_ui.audio.note_off();
     ESP_LOGI("SYNTH_UI", "Picker opened for wedge %u", wedge + 1);
 }
@@ -1016,7 +1229,12 @@ static void pad_event(lv_event_t *event)
         contact->anchor = point;
         contact->stationary_since = lv_tick_get();
         /* A ring touch can reuse the contact that still holds a note: leave it alone. */
-        if(!contact->ring) contact->note = pad_note(point.x, point.y, ++g_ui.trigger);
+        if(!contact->ring) {
+            contact->note = pad_note(point.x, point.y, ++g_ui.trigger);
+            const bool accent = point.y < UI_MAP_MIN + (UI_MAP_MAX - UI_MAP_MIN) * UI_SEQ_ACCENT_PCT / 100;
+            record_step(contact->note.frequency_centi_hz, contact->note.volume,
+                        SYNTH_SEQ_NOTE | (accent ? SYNTH_SEQ_ACCENT : 0));
+        }
     }
     if(code == LV_EVENT_PRESS_LOST) {
         contact->down = false;
@@ -1088,6 +1306,14 @@ static void pad_event(lv_event_t *event)
 static void hold_event(lv_event_t *event)
 {
     if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    const uint8_t w = g_ui.program;
+    if(g_seq_state[w] == SEQ_PLAY) {
+        g_seq_muted[w] = !g_seq_muted[w];
+        send_sequence(w);
+        update_hold_button();
+        ESP_LOGI("SYNTH_UI", "Wedge %u sequence muted=%d", w + 1, g_seq_muted[w]);
+        return;
+    }
     g_ui.hold = !g_ui.hold;
     if(g_ui.hold) {
         bool any = false;
@@ -1191,6 +1417,7 @@ static void close_picker(void)
     lv_obj_clear_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
     show(g_ui.hold_button);
     show(g_ui.arp_button);
+    show(g_ui.seq_button);
 }
 
 static void close_picker_async(void *)
@@ -1247,6 +1474,7 @@ static void select_picker_item(void)
         save_notes();
         g_env[g_ui.picker_slot] = preset_envelope(item.preset);
         save_env();
+        send_sequence(g_ui.picker_slot);
         lv_arclabel_set_text(g_ui.program_labels[g_ui.picker_slot], slot.ring);
         apply_slot(g_ui.picker_slot);
         request_close_picker();
@@ -1449,7 +1677,7 @@ static void create_pad(void)
     g_ui.hold_button = lv_obj_create(g_ui.screen);
     style_button(g_ui.hold_button);
     lv_obj_set_size(g_ui.hold_button, UI_HOLD_W, UI_HOLD_H);
-    lv_obj_align(g_ui.hold_button, LV_ALIGN_TOP_MID, -60, UI_HOLD_CY - UI_HOLD_H / 2);
+    lv_obj_align(g_ui.hold_button, LV_ALIGN_TOP_MID, -UI_PILL_SPACING, UI_HOLD_CY - UI_HOLD_H / 2);
     lv_obj_set_style_radius(g_ui.hold_button, UI_HOLD_RADIUS, 0);
     lv_obj_set_style_bg_color(g_ui.hold_button, col(UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.hold_button, 150, 0);
@@ -1461,13 +1689,23 @@ static void create_pad(void)
     g_ui.arp_button = lv_obj_create(g_ui.screen);
     style_button(g_ui.arp_button);
     lv_obj_set_size(g_ui.arp_button, UI_HOLD_W, UI_HOLD_H);
-    lv_obj_align(g_ui.arp_button, LV_ALIGN_TOP_MID, 60, UI_HOLD_CY - UI_HOLD_H / 2);
+    lv_obj_align(g_ui.arp_button, LV_ALIGN_TOP_MID, 0, UI_HOLD_CY - UI_HOLD_H / 2);
     lv_obj_set_style_radius(g_ui.arp_button, UI_HOLD_RADIUS, 0);
     lv_obj_set_style_bg_color(g_ui.arp_button, col(UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.arp_button, 150, 0);
     g_ui.arp_label = label(g_ui.arp_button, "Arp off", UI_FONT_SMALL, LV_OPA_COVER);
     lv_obj_center(g_ui.arp_label);
     lv_obj_add_event_cb(g_ui.arp_button, arp_event, LV_EVENT_CLICKED, nullptr);
+
+    g_ui.seq_button = lv_obj_create(g_ui.screen);
+    style_button(g_ui.seq_button);
+    lv_obj_set_size(g_ui.seq_button, UI_HOLD_W, UI_HOLD_H);
+    lv_obj_align(g_ui.seq_button, LV_ALIGN_TOP_MID, UI_PILL_SPACING, UI_HOLD_CY - UI_HOLD_H / 2);
+    lv_obj_set_style_radius(g_ui.seq_button, UI_HOLD_RADIUS, 0);
+    g_ui.seq_label = label(g_ui.seq_button, "Seq", UI_FONT_SMALL, LV_OPA_COVER);
+    lv_obj_center(g_ui.seq_label);
+    lv_obj_add_event_cb(g_ui.seq_button, seq_event, LV_EVENT_ALL, nullptr);
+    update_seq_button();
 
     lv_obj_t *touch = lv_obj_create(g_ui.pad);
     style_plain(touch);
@@ -1581,6 +1819,7 @@ void synth_ui_init(lv_obj_t *screen, const synth_ui_audio_callbacks_t *audio)
     load_slots();
     load_notes();
     load_env();
+    load_patterns();
     create_pad();
     create_picker();
     create_notes_editor();

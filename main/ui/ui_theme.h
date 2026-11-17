@@ -28,6 +28,7 @@ extern "C" {
  * ------------------------------------------------------------------------- */
 #define UI_COL_BG              0x161615  /* screen background                 */
 #define UI_COL_FG              0xFFFFFF  /* text / lines, used with opacity    */
+#define UI_COL_REC             0xE5484D  /* sequencer recording            */
 #define UI_COL_ACCENT          0xEF9F27  /* amber: active segment, trail, pill */
 #define UI_COL_ACCENT_LIGHT    0xFAC775  /* touch point core, toast text       */
 #define UI_COL_ACCENT_TEXT     0x412402  /* text on an amber fill              */
@@ -125,6 +126,8 @@ extern "C" {
 #define UI_HOLD_W              92
 #define UI_HOLD_H              32
 #define UI_HOLD_RADIUS         16
+#define UI_PILL_SPACING        105  /* Hold | Arp | Seq pill centres             */
+#define UI_SEQ_ACCENT_PCT      30   /* taps in the top 30% of the pad record accents */
 
 /* Gestures */
 #define UI_LONGPRESS_MS        600  /* centre long-press → instrument picker     */

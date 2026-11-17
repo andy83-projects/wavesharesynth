@@ -94,7 +94,9 @@ static inline int16_t apply_delay(int16_t dry)
 static Open303Voice *acid_voice = nullptr;
 static uint32_t acid_benchmark_worst_us = 0;
 static uint32_t acid_benchmark_average_us = 0;
-static_assert(MAX_VOICES >= SYNTH_UI_MAX_VOICES, "Not enough synth voices for touch contacts and held layers");
+/* Synth voice ids: UI voice slots first, then one per wedge sequence. */
+#define SYNTH_TOTAL_VOICES (SYNTH_UI_MAX_VOICES + SYNTH_UI_MAX_SEQUENCES)
+static_assert(MAX_VOICES >= SYNTH_TOTAL_VOICES, "Not enough synth voices for contacts, layers and sequences");
 
 typedef struct {
     synth_ui_voice_t voices[SYNTH_UI_MAX_VOICES];
@@ -165,10 +167,30 @@ static void apply_synth_preset(uint16_t preset, uint16_t voice)
     }
 }
 
-static uint16_t voice_preset[SYNTH_UI_MAX_VOICES];
-static synth_envelope_t voice_envelope[SYNTH_UI_MAX_VOICES];
-static bool gate[SYNTH_UI_MAX_VOICES]{};
-static uint32_t triggers[SYNTH_UI_MAX_VOICES]{};
+static uint16_t voice_preset[SYNTH_TOTAL_VOICES];
+static synth_envelope_t voice_envelope[SYNTH_TOTAL_VOICES];
+static bool gate[SYNTH_TOTAL_VOICES]{};
+static uint32_t triggers[SYNTH_TOTAL_VOICES]{};
+static synth_ui_sequence_t sequences[SYNTH_UI_MAX_SEQUENCES]{};
+static int64_t kick_started_us[SYNTH_TOTAL_VOICES]{};
+
+/* Sine kick (preset 20): the tapped note folded into 40-80 Hz is the body, and
+ * the pitch falls exponentially onto it from 4x above. */
+static bool is_kick_preset(uint16_t preset) { return preset == 20; }
+
+static uint32_t kick_body_centi_hz(uint32_t note_centi_hz)
+{
+    uint32_t f = note_centi_hz ? note_centi_hz : 5000;
+    while(f > 8000) f /= 2;
+    while(f < 4000) f *= 2;
+    return f;
+}
+
+static uint32_t kick_pitch_centi_hz(uint32_t body, float t_ms)
+{
+    return body + (uint32_t)(3.0f * body * expf(-t_ms / 25.0f));
+}
+static portMUX_TYPE sequence_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint16_t acid_preset = UINT16_MAX;
 static synth_envelope_t acid_envelope{};
 static bool acid_gate = false;
@@ -222,12 +244,39 @@ static void run_arps(synth_ui_voice_t *voices)
     }
 }
 
-static void apply_voices(const synth_ui_voice_t *voices, uint16_t cutoff_hz, uint8_t resonance)
+/* Sequences share one 16th-note grid (esp_timer ms / step) so loops on
+ * different wedges stay in time with each other. */
+static void run_sequences(synth_ui_voice_t *out)
+{
+    static synth_ui_sequence_t local[SYNTH_UI_MAX_SEQUENCES];
+    portENTER_CRITICAL(&sequence_lock);
+    memcpy(local, sequences, sizeof(local));
+    portEXIT_CRITICAL(&sequence_lock);
+    const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    const uint32_t step_ms = 15000u / arp_bpm;
+    const uint32_t gate_ms = step_ms * 3 / 4;
+    const uint32_t global_step = now_ms / step_ms;
+    const bool gate_open = now_ms % step_ms < gate_ms;
+    for(uint16_t i = 0; i < SYNTH_UI_MAX_SEQUENCES; ++i) {
+        const synth_ui_sequence_t &seq = local[i];
+        out[i] = {};
+        if(!seq.playing || !seq.length || (int32_t)(global_step - seq.start_step) < 0) continue;
+        const uint32_t played = global_step - seq.start_step;
+        const synth_seq_step_t &step = seq.steps[played % seq.length];
+        if(!(step.flags & SYNTH_SEQ_NOTE)) continue;
+        out[i].note = {step.frequency_centi_hz, step.volume, gate_open, seq.base_trigger + played,
+                       (step.flags & SYNTH_SEQ_ACCENT) != 0, false, false};
+        out[i].preset = seq.preset;
+        out[i].envelope = seq.envelope;
+    }
+}
+
+static void apply_voices(const synth_ui_voice_t *voices, uint16_t count, uint16_t cutoff_hz, uint8_t resonance)
 {
     /* One Open303 exists, so the newest acid note owns it. */
     const synth_ui_voice_t *acid = nullptr;
     uint16_t active_count = 0;
-    for(uint16_t i = 0; i < SYNTH_UI_MAX_VOICES; ++i) {
+    for(uint16_t i = 0; i < count; ++i) {
         const synth_ui_voice_t &voice = voices[i];
         if(is_acid_preset(voice.preset)) {
             if(voice.note.pressed && (!acid || (int32_t)(voice.note.trigger - acid->note.trigger) > 0)) acid = &voice;
@@ -238,7 +287,7 @@ static void apply_voices(const synth_ui_voice_t *voices, uint16_t cutoff_hz, uin
     }
     if(active_count == 0) active_count = 1;
 
-    for(uint16_t i = 0; i < SYNTH_UI_MAX_VOICES; ++i) {
+    for(uint16_t i = 0; i < count; ++i) {
         const synth_ui_voice_t &voice = voices[i];
         if(!voice.note.pressed || is_acid_preset(voice.preset)) {
             if(gate[i]) synth.noteOff(i);
@@ -257,13 +306,22 @@ static void apply_voices(const synth_ui_voice_t *voices, uint16_t cutoff_hz, uin
             synth.setEnv(i, voice.envelope.attack, voice.envelope.decay, voice.envelope.sustain, voice.envelope.release);
         }
         const synth_ui_note_t &note = voice.note;
+        const bool kick = is_kick_preset(voice.preset);
+        const uint32_t body = kick ? kick_body_centi_hz(note.frequency_centi_hz) : 0;
         if(!gate[i] || triggers[i] != note.trigger) {
-            synth.noteOn(i, note.frequency_centi_hz, note.volume / active_count);
+            synth.noteOn(i, kick ? kick_pitch_centi_hz(body, 0) : note.frequency_centi_hz, note.volume / active_count);
             gate[i] = true;
             triggers[i] = note.trigger;
+            kick_started_us[i] = esp_timer_get_time();
         } else {
-            synth.setFrequency(i, note.frequency_centi_hz);
+            if(!kick) synth.setFrequency(i, note.frequency_centi_hz);
             synth.setVolume(i, note.volume / active_count);
+        }
+        if(kick) {
+            /* Chain short linear slides along the exponential drop: each block
+             * glides to where the curve will be by the next block. */
+            const float t_ms = (esp_timer_get_time() - kick_started_us[i]) / 1000.0f;
+            synth.slideFreq(i, kick_pitch_centi_hz(body, t_ms), kick_pitch_centi_hz(body, t_ms + 5.0f), 5);
         }
     }
 
@@ -314,13 +372,16 @@ static void synth_output_callback(int16_t *samples, int num_samples)
         current = command;
         have_command = true;
     }
-    /* Re-evaluated every block (not only on UI updates) so arps keep time. */
-    if(have_command) {
-        synth_ui_voice_t voices[SYNTH_UI_MAX_VOICES];
-        memcpy(voices, current.voices, sizeof(voices));
-        run_arps(voices);
-        apply_voices(voices, current.cutoff_hz, current.resonance);
+    if(!have_command) {
+        current.cutoff_hz = desired_cutoff;
+        current.resonance = desired_resonance;
     }
+    /* Re-evaluated every block (not only on UI updates) so arps and sequences keep time. */
+    synth_ui_voice_t voices[SYNTH_TOTAL_VOICES];
+    memcpy(voices, current.voices, sizeof(current.voices));
+    run_arps(voices);
+    run_sequences(voices + SYNTH_UI_MAX_VOICES);
+    apply_voices(voices, SYNTH_TOTAL_VOICES, current.cutoff_hz, current.resonance);
 
     if (num_samples > SYNTH_OUTPUT_BLOCK_MAX) {
         ESP_LOGE(TAG, "Synth output block too large: %d", num_samples);
@@ -609,6 +670,14 @@ static void ui_set_delay(uint16_t time_ms, uint8_t feedback_pct, uint8_t mix_pct
     desired_delay_samples = samples;
 }
 
+static void ui_set_sequence(uint8_t index, const synth_ui_sequence_t *sequence)
+{
+    if(index >= SYNTH_UI_MAX_SEQUENCES) return;
+    portENTER_CRITICAL(&sequence_lock);
+    sequences[index] = *sequence;
+    portEXIT_CRITICAL(&sequence_lock);
+}
+
 static void ui_set_tempo(uint16_t bpm)
 {
     arp_bpm = bpm;
@@ -631,6 +700,7 @@ static void init_ui(void)
         .set_envelope = ui_set_envelope,
         .set_delay = ui_set_delay,
         .set_tempo = ui_set_tempo,
+        .set_sequence = ui_set_sequence,
     };
     synth_ui_init(lv_screen_active(), &audio);
 }

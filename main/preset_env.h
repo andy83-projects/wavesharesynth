@@ -31,7 +31,7 @@ static inline synth_envelope_t preset_envelope(uint16_t preset)
     case 14: return {2, 130, 0, 120, 0};
     case 18: return {1, 35, 0, 30, 0};
     case 19: return {1, 140, 0, 30, 0};
-    case 20: return {1, 220, 0, 30, 0};
+    case 20: return {0, 380, 0, 60, 0};
     default: return {5, 60, 200, 120, 0};
     }
 }
