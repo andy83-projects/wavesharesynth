@@ -355,6 +355,7 @@ static void arp_timer(lv_timer_t *)
 static void arp_event(lv_event_t *event)
 {
     if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    ESP_LOGI("SYNTH_UI", "Arp button clicked, before toggle: enabled=%d hidden=%d", g_ui.arp_enabled, lv_obj_has_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN));
     g_ui.arp_enabled = !g_ui.arp_enabled;
     g_ui.arp = false;
     lv_label_set_text(g_ui.arp_label, g_ui.arp_enabled ? "Arp on" : "Arp off");
@@ -363,7 +364,7 @@ static void arp_event(lv_event_t *event)
     lv_obj_clear_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(g_ui.arp_button);
     lv_obj_invalidate(g_ui.arp_button);
-    ESP_LOGI("SYNTH_UI", "Arp enabled=%d", g_ui.arp_enabled);
+    ESP_LOGI("SYNTH_UI", "Arp enabled=%d hidden=%d", g_ui.arp_enabled, lv_obj_has_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN));
 }
 
 static void stop_contacts(void)
@@ -792,7 +793,7 @@ static void create_pad(void)
     g_ui.readout = label(g_ui.pad, "", UI_FONT_READOUT, UI_OPA_TEXT_SUB);
     lv_obj_align(g_ui.readout, LV_ALIGN_TOP_MID, 0, UI_PAD_READOUT_Y - 10);
 
-    g_ui.hold_button = lv_obj_create(g_ui.pad);
+    g_ui.hold_button = lv_obj_create(g_ui.screen);
     style_plain(g_ui.hold_button);
     lv_obj_set_size(g_ui.hold_button, UI_HOLD_W, UI_HOLD_H);
     lv_obj_align(g_ui.hold_button, LV_ALIGN_TOP_MID, -60, UI_HOLD_CY - UI_HOLD_H / 2);
@@ -804,7 +805,7 @@ static void create_pad(void)
     lv_obj_center(g_ui.hold_label);
     lv_obj_add_event_cb(g_ui.hold_button, hold_event, LV_EVENT_CLICKED, nullptr);
 
-    g_ui.arp_button = lv_obj_create(g_ui.pad);
+    g_ui.arp_button = lv_obj_create(g_ui.screen);
     style_plain(g_ui.arp_button);
     lv_obj_set_size(g_ui.arp_button, UI_HOLD_W, UI_HOLD_H);
     lv_obj_align(g_ui.arp_button, LV_ALIGN_TOP_MID, 60, UI_HOLD_CY - UI_HOLD_H / 2);
