@@ -92,6 +92,14 @@ static void style_plain(lv_obj_t *obj)
     lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(obj, 0, 0);
     lv_obj_set_style_pad_all(obj, 0, 0);
+
+    /* These objects are also used as transparent touch layers. Do not let the
+     * default LVGL theme paint its pressed/focused color over the synth UI. */
+    const lv_style_selector_t active = LV_PART_MAIN | LV_STATE_PRESSED;
+    lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, active);
+    lv_obj_set_style_border_opa(obj, LV_OPA_TRANSP, active);
+    lv_obj_set_style_outline_opa(obj, LV_OPA_TRANSP, active);
+    lv_obj_set_style_shadow_opa(obj, LV_OPA_TRANSP, active);
 }
 
 static lv_obj_t *label(lv_obj_t *parent, const char *text, const lv_font_t *font,
@@ -509,6 +517,8 @@ void synth_ui_init(lv_obj_t *screen, const synth_ui_audio_callbacks_t *audio)
     if(audio) g_ui.audio = *audio;
     lv_obj_set_style_bg_color(screen, col(UI_COL_BG), 0);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(screen, col(UI_COL_BG), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
     create_pad();
     create_picker();
 }
