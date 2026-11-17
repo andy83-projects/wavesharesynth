@@ -1,5 +1,7 @@
 #include "synth_ui.h"
 #include "ui_theme.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -363,7 +365,9 @@ static void arp_event(lv_event_t *event)
     lv_obj_set_style_bg_opa(g_ui.arp_button, g_ui.arp_enabled ? LV_OPA_COVER : 150, 0);
     lv_obj_clear_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(g_ui.arp_button);
-    lv_obj_invalidate(g_ui.arp_button);
+    vTaskDelay(5 / portTICK_PERIOD_MS);
+    lv_obj_invalidate(g_ui.screen);
+    lv_refr_now(nullptr);
     ESP_LOGI("SYNTH_UI", "Arp enabled=%d hidden=%d", g_ui.arp_enabled, lv_obj_has_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN));
 }
 
@@ -497,7 +501,9 @@ static void hold_event(lv_event_t *event)
     lv_obj_set_style_bg_opa(g_ui.hold_button, g_ui.hold ? LV_OPA_COVER : 150, 0);
     lv_obj_clear_flag(g_ui.hold_button, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(g_ui.hold_button);
-    lv_obj_invalidate(g_ui.hold_button);
+    vTaskDelay(5 / portTICK_PERIOD_MS);
+    lv_obj_invalidate(g_ui.screen);
+    lv_refr_now(nullptr);
     ESP_LOGI("SYNTH_UI", "Hold enabled=%d", g_ui.hold);
 }
 
