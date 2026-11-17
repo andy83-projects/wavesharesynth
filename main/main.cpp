@@ -40,7 +40,7 @@ static const char *TAG = "WAVESHARESYNTH";
 #define I2C_SDA_PIN     GPIO_NUM_7
 #define I2C_SCL_PIN     GPIO_NUM_8
 #define SAMPLE_RATE         32000
-#define I2S_MCLK_MULTIPLE   384
+#define I2S_MCLK_MULTIPLE   I2S_MCLK_MULTIPLE_384
 #define SYNTH_OUTPUT_BLOCK_MAX 512
 
 static esp_codec_dev_handle_t speaker_codec_handle = NULL;
