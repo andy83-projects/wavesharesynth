@@ -362,6 +362,7 @@ static void arp_event(lv_event_t *event)
     lv_obj_set_style_bg_opa(g_ui.arp_button, g_ui.arp_enabled ? LV_OPA_COVER : UI_OPA_PILL_IDLE, 0);
     lv_obj_set_style_text_color(g_ui.arp_label, col(g_ui.arp_enabled ? UI_COL_ACCENT_TEXT : UI_COL_FG), 0);
     lv_obj_set_style_text_opa(g_ui.arp_label, LV_OPA_COVER, 0);
+    lv_obj_invalidate(g_ui.arp_button);
     ESP_LOGI("SYNTH_UI", "Arp enabled=%d", g_ui.arp_enabled);
     publish_contacts();
 }
@@ -496,6 +497,7 @@ static void hold_event(lv_event_t *event)
     lv_obj_set_style_bg_opa(g_ui.hold_button, g_ui.hold ? LV_OPA_COVER : UI_OPA_PILL_IDLE, 0);
     lv_obj_set_style_text_color(g_ui.hold_label, col(g_ui.hold ? UI_COL_ACCENT_TEXT : UI_COL_FG), 0);
     lv_obj_set_style_text_opa(g_ui.hold_label, LV_OPA_COVER, 0);
+    lv_obj_invalidate(g_ui.hold_button);
     ESP_LOGI("SYNTH_UI", "Hold enabled=%d", g_ui.hold);
 }
 
