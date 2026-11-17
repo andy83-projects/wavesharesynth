@@ -424,8 +424,10 @@ static void pad_event(lv_event_t *event)
         return;
     }
     if(contact->ring) {
-        if(code != LV_EVENT_RELEASED) select_ring_program(point);
-        else contact->down = false;
+        bool pad_active = false;
+        for(auto &c : g_ui.contacts) if(c.device != indev && c.down && !c.ring) pad_active = true;
+        if(code != LV_EVENT_RELEASED && !pad_active) select_ring_program(point);
+        else if(code == LV_EVENT_RELEASED) contact->down = false;
         return;
     }
     if(code == LV_EVENT_RELEASED) {
