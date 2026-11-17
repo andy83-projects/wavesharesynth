@@ -1,0 +1,29 @@
+idf_component_register(
+    SRCS
+        "ESP32Synth.cpp"
+        "helix/bitstream.c"
+        "helix/buffers.c"
+        "helix/dct32.c"
+        "helix/dequant.c"
+        "helix/dqchan.c"
+        "helix/helix_mp3.c"
+        "helix/huffman.c"
+        "helix/hufftabs.c"
+        "helix/imdct.c"
+        "helix/mp3dec.c"
+        "helix/mp3tabs.c"
+        "helix/polyphase.c"
+        "helix/scalfact.c"
+        "helix/stproc.c"
+        "helix/subband.c"
+        "helix/trigtabs.c"
+    INCLUDE_DIRS
+        "."
+        "helix"
+    REQUIRES
+        esp_timer
+        esp_system
+        freertos
+        esp_driver_i2s
+        esp_driver_ledc
+)

@@ -3,6 +3,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         esp32_p4_wifi6_touch_lcd_xc
+        esp32synth
         esp_lvgl_adapter
         lvgl
         esp_system

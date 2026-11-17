@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 
 #include "driver/i2s_std.h"
@@ -13,6 +14,7 @@
 #include "esp_codec_dev.h"
 #include "esp_lv_adapter.h"
 #include "lvgl.h"
+#include "ESP32Synth.h"
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -39,6 +41,7 @@ static const char *TAG = "WAVESHARESYNTH";
 #define I2C_SCL_PIN     GPIO_NUM_8
 #define SAMPLE_RATE         32000
 #define I2S_MCLK_MULTIPLE   384
+#define SYNTH_OUTPUT_BLOCK_MAX 512
 
 static esp_codec_dev_handle_t speaker_codec_handle = NULL;
 static esp_lcd_panel_handle_t display_panel = NULL;
@@ -46,6 +49,53 @@ static esp_lcd_panel_io_handle_t display_io = NULL;
 static esp_lcd_touch_handle_t touch_handle = NULL;
 static lv_display_t *lvgl_display = NULL;
 static lv_obj_t *touch_status_label = NULL;
+static ESP32Synth synth;
+static QueueHandle_t synth_command_queue = NULL;
+static int16_t synth_stereo_buffer[SYNTH_OUTPUT_BLOCK_MAX * 2];
+
+typedef struct {
+    uint32_t frequency_centi_hz;
+    uint16_t volume;
+    bool pressed;
+} synth_command_t;
+
+static void synth_output_callback(int16_t *samples, int num_samples)
+{
+    synth_command_t command;
+    while (xQueueReceive(synth_command_queue, &command, 0) == pdTRUE) {
+        if (command.pressed) {
+            synth.noteOn(0, command.frequency_centi_hz, command.volume);
+        } else {
+            synth.noteOff(0);
+        }
+    }
+
+    if (num_samples > SYNTH_OUTPUT_BLOCK_MAX) {
+        ESP_LOGE(TAG, "Synth output block too large: %d", num_samples);
+        return;
+    }
+
+    for (int i = 0; i < num_samples; i++) {
+        synth_stereo_buffer[i * 2] = samples[i];
+        synth_stereo_buffer[i * 2 + 1] = samples[i];
+    }
+    esp_codec_dev_write(speaker_codec_handle, synth_stereo_buffer,
+                        num_samples * 2 * (int)sizeof(int16_t));
+}
+
+static void queue_synth_command(uint32_t frequency_centi_hz, uint16_t volume,
+                                bool pressed)
+{
+    if (synth_command_queue == NULL) {
+        return;
+    }
+    const synth_command_t command = {
+        .frequency_centi_hz = frequency_centi_hz,
+        .volume = volume,
+        .pressed = pressed,
+    };
+    xQueueOverwrite(synth_command_queue, &command);
+}
 
 esp_err_t init_i2c(void)
 {
@@ -63,6 +113,16 @@ esp_err_t init_codec(void)
                         "Failed to initialize ES8311 speaker codec");
     ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(speaker_codec_handle, 70), TAG,
                         "Failed to set ES8311 output volume");
+
+    const esp_codec_dev_sample_info_t sample_info = {
+        .bits_per_sample = 16,
+        .channel = 2,
+        .channel_mask = 0,
+        .sample_rate = SAMPLE_RATE,
+        .mclk_multiple = I2S_MCLK_MULTIPLE,
+    };
+    ESP_RETURN_ON_FALSE(esp_codec_dev_open(speaker_codec_handle, &sample_info) == ESP_CODEC_DEV_OK,
+                        ESP_FAIL, TAG, "Failed to open ES8311 speaker stream");
 
     ESP_LOGI(TAG, "ES8311 speaker codec initialized through Waveshare BSP: %d Hz, volume 70",
              SAMPLE_RATE);
@@ -102,7 +162,15 @@ esp_err_t init_i2s(void)
 
 esp_err_t init_synth(void)
 {
-    ESP_LOGI(TAG, "Audio system ready at %d Hz", SAMPLE_RATE);
+    synth_command_queue = xQueueCreate(1, sizeof(synth_command_t));
+    ESP_RETURN_ON_FALSE(synth_command_queue != NULL, ESP_ERR_NO_MEM, TAG,
+                        "Failed to allocate synth command queue");
+    ESP_RETURN_ON_FALSE(synth.beginCustom(SAMPLE_RATE, synth_output_callback), ESP_FAIL,
+                        TAG, "Failed to initialize ESP32Synth custom output");
+    synth.setMasterVolume(255);
+    synth.setWave(0, WAVE_SINE);
+    synth.setEnv(0, 5, 40, 220, 120);
+    ESP_LOGI(TAG, "ESP32Synth initialized at %d Hz with codec output callback", SAMPLE_RATE);
     return ESP_OK;
 }
 
@@ -146,7 +214,8 @@ esp_err_t init_display(void)
 
 static void touch_event_cb(lv_event_t *event)
 {
-    if (lv_event_get_code(event) != LV_EVENT_PRESSED) {
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code != LV_EVENT_PRESSED && code != LV_EVENT_PRESSING && code != LV_EVENT_RELEASED) {
         return;
     }
 
@@ -155,9 +224,20 @@ static void touch_event_cb(lv_event_t *event)
     if (indev != NULL) {
         lv_indev_get_point(indev, &point);
     }
-    lv_label_set_text_fmt(touch_status_label, "Touch: %d, %d",
-                          (int)point.x, (int)point.y);
-    ESP_LOGI(TAG, "LVGL touch event: x=%d y=%d", (int)point.x, (int)point.y);
+    if (code == LV_EVENT_RELEASED) {
+        queue_synth_command(0, 0, false);
+        lv_label_set_text(touch_status_label, "Touch: released");
+        return;
+    }
+
+    const int x = (point.x < 0) ? 0 : (point.x > 719 ? 719 : point.x);
+    const int y = (point.y < 0) ? 0 : (point.y > 719 ? 719 : point.y);
+    const uint32_t frequency_centi_hz = 13000u + ((uint32_t)x * 87000u) / 719u;
+    const uint16_t volume = (uint16_t)(((uint32_t)(719 - y) * 255u) / 719u);
+    queue_synth_command(frequency_centi_hz, volume, true);
+    lv_label_set_text_fmt(touch_status_label, "Touch: %d, %d", x, y);
+    ESP_LOGI(TAG, "Synth touch: x=%d y=%d freq=%lu cHz volume=%u",
+             x, y, (unsigned long)frequency_centi_hz, volume);
 }
 
 esp_err_t init_touch(void)
@@ -196,7 +276,7 @@ static void init_ui(void)
     lv_obj_t *touch_surface = lv_btn_create(screen);
     lv_obj_set_size(touch_surface, 560, 430);
     lv_obj_align(touch_surface, LV_ALIGN_CENTER, 0, 30);
-    lv_obj_add_event_cb(touch_surface, touch_event_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(touch_surface, touch_event_cb, LV_EVENT_ALL, NULL);
 
     lv_obj_t *surface_label = lv_label_create(touch_surface);
     lv_label_set_text(surface_label, "TOUCH SURFACE");
