@@ -221,7 +221,7 @@ static UiState g_ui;
 
 static lv_color_t col(uint32_t hex) { return lv_color_hex(hex); }
 
-static void style_plain(lv_obj_t *obj)
+static void style_base(lv_obj_t *obj)
 {
     /* This UI supplies its own styles. Remove theme transitions and states,
      * and prevent LVGL's built-in scrolling from stealing wheel gestures. */
@@ -231,7 +231,19 @@ static void style_plain(lv_obj_t *obj)
     lv_obj_set_style_border_width(obj, 0, 0);
     lv_obj_set_style_radius(obj, 0, 0);
     lv_obj_set_style_pad_all(obj, 0, 0);
+}
 
+/* Visible buttons: no transparent pressed/focused overrides, and no focus on
+ * click, otherwise the pill vanishes after every tap. */
+static void style_button(lv_obj_t *obj)
+{
+    style_base(obj);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+}
+
+static void style_plain(lv_obj_t *obj)
+{
+    style_base(obj);
     /* These objects are also used as transparent touch layers. Do not let the
      * default LVGL theme paint its pressed/focused color over the synth UI. */
     const lv_style_selector_t active = LV_PART_MAIN | LV_STATE_PRESSED;
@@ -596,8 +608,6 @@ static void arp_event(lv_event_t *event)
     lv_label_set_text(g_ui.arp_label, g_ui.arp_enabled ? "Arp on" : "Arp off");
     lv_obj_set_style_bg_color(g_ui.arp_button, col(g_ui.arp_enabled ? UI_COL_ACCENT : UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.arp_button, g_ui.arp_enabled ? LV_OPA_COVER : 150, 0);
-    lv_obj_clear_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(g_ui.arp_button);
     ESP_LOGI("SYNTH_UI", "Arp enabled=%d", g_ui.arp_enabled);
 }
 
@@ -796,7 +806,7 @@ static void notes_button_event(lv_event_t *event)
 static lv_obj_t *notes_button(const char *text, int x, int y, int w, uintptr_t action)
 {
     lv_obj_t *button = lv_obj_create(g_ui.notes_panel);
-    style_plain(button);
+    style_button(button);
     lv_obj_set_size(button, w, UI_NOTES_BTN);
     lv_obj_set_pos(button, x, y);
     lv_obj_set_style_radius(button, UI_NOTES_BTN / 2, 0);
@@ -974,8 +984,6 @@ static void hold_event(lv_event_t *event)
     }
     lv_obj_set_style_bg_color(g_ui.hold_button, col(g_ui.hold ? UI_COL_ACCENT : UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.hold_button, g_ui.hold ? LV_OPA_COVER : 150, 0);
-    lv_obj_clear_flag(g_ui.hold_button, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(g_ui.hold_button);
     ESP_LOGI("SYNTH_UI", "Hold enabled=%d", g_ui.hold);
 }
 
@@ -1314,7 +1322,7 @@ static void create_pad(void)
     lv_obj_align(g_ui.readout, LV_ALIGN_TOP_MID, 0, UI_PAD_READOUT_Y - 10);
 
     g_ui.hold_button = lv_obj_create(g_ui.screen);
-    style_plain(g_ui.hold_button);
+    style_button(g_ui.hold_button);
     lv_obj_set_size(g_ui.hold_button, UI_HOLD_W, UI_HOLD_H);
     lv_obj_align(g_ui.hold_button, LV_ALIGN_TOP_MID, -60, UI_HOLD_CY - UI_HOLD_H / 2);
     lv_obj_set_style_radius(g_ui.hold_button, UI_HOLD_RADIUS, 0);
@@ -1326,7 +1334,7 @@ static void create_pad(void)
     lv_obj_add_event_cb(g_ui.hold_button, hold_event, LV_EVENT_CLICKED, nullptr);
 
     g_ui.arp_button = lv_obj_create(g_ui.screen);
-    style_plain(g_ui.arp_button);
+    style_button(g_ui.arp_button);
     lv_obj_set_size(g_ui.arp_button, UI_HOLD_W, UI_HOLD_H);
     lv_obj_align(g_ui.arp_button, LV_ALIGN_TOP_MID, 60, UI_HOLD_CY - UI_HOLD_H / 2);
     lv_obj_set_style_radius(g_ui.arp_button, UI_HOLD_RADIUS, 0);
@@ -1354,12 +1362,6 @@ static void create_pad(void)
     g_ui.touch_dot = circle(g_ui.pad, UI_TOUCH_DOT_R * 2, col(UI_COL_FG), LV_OPA_COVER); hide(g_ui.touch_dot);
     lv_obj_clear_flag(g_ui.cross_x, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(g_ui.cross_y, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_move_foreground(g_ui.hold_button);
-    lv_obj_move_foreground(g_ui.arp_button);
-    lv_obj_invalidate(g_ui.hold_button);
-    lv_obj_invalidate(g_ui.arp_button);
-    ESP_LOGI("SYNTH_UI", "UI setup complete: buttons parent is screen, arp parent=%p screen=%p pad=%p",
-             lv_obj_get_parent(g_ui.arp_button), g_ui.screen, g_ui.pad);
     for(auto &contact : g_ui.contacts) {
         contact.marker = circle(g_ui.pad, 24, col(UI_COL_ACCENT_LIGHT), LV_OPA_COVER);
         hide(contact.marker);
