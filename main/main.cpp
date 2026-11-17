@@ -15,6 +15,7 @@
 #include "esp_lv_adapter.h"
 #include "lvgl.h"
 #include "ESP32Synth.h"
+#include "ui/synth_ui.h"
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -48,7 +49,6 @@ static esp_lcd_panel_handle_t display_panel = NULL;
 static esp_lcd_panel_io_handle_t display_io = NULL;
 static esp_lcd_touch_handle_t touch_handle = NULL;
 static lv_display_t *lvgl_display = NULL;
-static lv_obj_t *touch_status_label = NULL;
 static ESP32Synth synth;
 static QueueHandle_t synth_command_queue = NULL;
 static int16_t synth_stereo_buffer[SYNTH_OUTPUT_BLOCK_MAX * 2];
@@ -212,34 +212,6 @@ esp_err_t init_display(void)
     return ESP_OK;
 }
 
-static void touch_event_cb(lv_event_t *event)
-{
-    lv_event_code_t code = lv_event_get_code(event);
-    if (code != LV_EVENT_PRESSED && code != LV_EVENT_PRESSING && code != LV_EVENT_RELEASED) {
-        return;
-    }
-
-    lv_indev_t *indev = lv_indev_get_act();
-    lv_point_t point = {0};
-    if (indev != NULL) {
-        lv_indev_get_point(indev, &point);
-    }
-    if (code == LV_EVENT_RELEASED) {
-        queue_synth_command(0, 0, false);
-        lv_label_set_text(touch_status_label, "Touch: released");
-        return;
-    }
-
-    const int x = (point.x < 0) ? 0 : (point.x > 719 ? 719 : point.x);
-    const int y = (point.y < 0) ? 0 : (point.y > 719 ? 719 : point.y);
-    const uint32_t frequency_centi_hz = 13000u + ((uint32_t)x * 87000u) / 719u;
-    const uint16_t volume = (uint16_t)(((uint32_t)(719 - y) * 255u) / 719u);
-    queue_synth_command(frequency_centi_hz, volume, true);
-    lv_label_set_text_fmt(touch_status_label, "Touch: %d, %d", x, y);
-    ESP_LOGI(TAG, "Synth touch: x=%d y=%d freq=%lu cHz volume=%u",
-             x, y, (unsigned long)frequency_centi_hz, volume);
-}
-
 esp_err_t init_touch(void)
 {
     const bsp_display_cfg_t touch_cfg = {
@@ -259,32 +231,23 @@ esp_err_t init_touch(void)
     return ESP_OK;
 }
 
+static void ui_note_on(uint32_t frequency_centi_hz, uint16_t volume)
+{
+    queue_synth_command(frequency_centi_hz, volume, true);
+}
+
+static void ui_note_off(void)
+{
+    queue_synth_command(0, 0, false);
+}
+
 static void init_ui(void)
 {
-    lv_obj_t *screen = lv_screen_active();
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0x101318), 0);
-    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
-
-    lv_obj_t *title = lv_label_create(screen);
-    lv_label_set_text(title, "WAVESHARE SYNTH");
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 36);
-
-    lv_obj_t *subtitle = lv_label_create(screen);
-    lv_label_set_text(subtitle, "LVGL UI foundation");
-    lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 76);
-
-    lv_obj_t *touch_surface = lv_btn_create(screen);
-    lv_obj_set_size(touch_surface, 560, 430);
-    lv_obj_align(touch_surface, LV_ALIGN_CENTER, 0, 30);
-    lv_obj_add_event_cb(touch_surface, touch_event_cb, LV_EVENT_ALL, NULL);
-
-    lv_obj_t *surface_label = lv_label_create(touch_surface);
-    lv_label_set_text(surface_label, "TOUCH SURFACE");
-    lv_obj_center(surface_label);
-
-    touch_status_label = lv_label_create(screen);
-    lv_label_set_text(touch_status_label, "Touch: --, --");
-    lv_obj_align(touch_status_label, LV_ALIGN_BOTTOM_MID, 0, -36);
+    const synth_ui_audio_callbacks_t audio = {
+        .note_on = ui_note_on,
+        .note_off = ui_note_off,
+    };
+    synth_ui_init(lv_screen_active(), &audio);
 }
 
 extern "C" void app_main(void)
