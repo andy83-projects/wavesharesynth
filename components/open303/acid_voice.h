@@ -1,0 +1,30 @@
+#pragma once
+
+#include <cstdint>
+#include <memory>
+
+namespace rosic { class Open303; }
+
+class Open303Voice {
+public:
+    explicit Open303Voice(float sample_rate = 32000.0f);
+    ~Open303Voice();
+    void reset();
+    void set_controls(uint16_t cutoff_hz, uint8_t resonance);
+    void set_waveform(bool square);
+    void note_on(uint8_t midi_note, bool accent, bool slide, uint16_t volume);
+    void note_off();
+    void set_volume(uint16_t volume) { target_gain = volume > 255 ? 1.0f : volume / 255.0f; }
+    void render(int16_t *output, unsigned frames);
+    unsigned fault_count() const { return faults; }
+private:
+    std::unique_ptr<rosic::Open303> engine;
+    bool gate = false;
+    bool sounding = false;
+    unsigned quiet_frames = 0;
+    unsigned faults = 0;
+    float target_cutoff = 350, cutoff = 350;
+    float target_resonance = 75, resonance = 75;
+    float gain = 0.75f, target_gain = 0.75f;
+    unsigned control_count = 0;
+};

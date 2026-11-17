@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -15,7 +16,11 @@
 #include "esp_lv_adapter.h"
 #include "lvgl.h"
 #include "ESP32Synth.h"
+#include "ESP32Synth_Patches.hpp"
+#include <math.h>
 #include "ui/synth_ui.h"
+#include "acid_voice.h"
+#include <new>
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -52,21 +57,148 @@ static lv_display_t *lvgl_display = NULL;
 static ESP32Synth synth;
 static QueueHandle_t synth_command_queue = NULL;
 static int16_t synth_stereo_buffer[SYNTH_OUTPUT_BLOCK_MAX * 2];
+static int16_t preset_wavetables[3][256];
+/* UI task owns desired_preset; each queue snapshot carries it to core 1. */
+static uint16_t desired_preset = 0;
+static uint16_t desired_cutoff = 350;
+static uint8_t desired_resonance = 140;
+static Open303Voice *acid_voice = nullptr;
+static uint32_t acid_benchmark_worst_us = 0;
+static uint32_t acid_benchmark_average_us = 0;
+static_assert(MAX_VOICES >= SYNTH_UI_MAX_CONTACTS, "Not enough synth voices for touch contacts");
 
 typedef struct {
-    uint32_t frequency_centi_hz;
-    uint16_t volume;
-    bool pressed;
+    synth_ui_note_t notes[SYNTH_UI_MAX_CONTACTS];
+    uint16_t preset;
+    uint16_t cutoff_hz;
+    uint8_t resonance;
 } synth_command_t;
+
+static void apply_synth_preset(uint16_t preset, uint16_t voice)
+{
+    synth.noteOff(voice);
+    synth.setVibrato(voice, 0, 0);
+    synth.setTremolo(voice, 0, 0);
+    synth.setCustomDSP(nullptr);
+    synth.setMasterBitcrush(16);
+    synth.setEnv(voice, 5, 60, 200, 120);
+    for(uint8_t i = 0; i < 4; ++i) synth.setCustomParam(voice, i, 0);
+    switch(preset) {
+    case 0: synth.setCustomWave(voice, ESP32Patches::AA_Saw); break;
+    case 1:
+        synth.setPulseWidthBitDepth(8);
+        synth.setPulseWidth(voice, 96);
+        synth.setCustomWave(voice, ESP32Patches::AA_Pulse);
+        break;
+    case 2:
+        synth.setWave(voice, WAVE_TRIANGLE);
+        synth.setEnv(voice, 15, 250, 140, 200);
+        break;
+    case 3:
+        /* Dedicated Open303 renders this preset; ESP32Synth voices stay off. */
+        break;
+    case 4: synth.setWave(voice, WAVE_SINE); break;
+    case 6: case 7:
+        synth.setCustomWave(voice, ESP32Patches::FM_Custom);
+        synth.setCustomParam(voice, 0, preset == 6 ? 1 : 3);
+        synth.setCustomParam(voice, 1, preset == 6 ? 0 : 50);
+        synth.setCustomParam(voice, 2, preset == 6 ? 25 : 90);
+        synth.setCustomParam(voice, 3, preset == 6 ? 16000 : 6000);
+        synth.setEnv(voice, 3, preset == 6 ? 500 : 1000, 0, 200);
+        break;
+    case 8: case 9:
+        synth.setCustomWave(voice, ESP32Patches::HammondB3);
+        synth.setCustomParam(voice, 0, preset == 8 ? 0 : 2);
+        if(preset == 9) {
+            synth.setVibrato(voice, 550, 180);
+            synth.setTremolo(voice, 550, 65);
+        }
+        break;
+    case 12: case 13: case 14:
+        synth.setWave(voice, preset == 13 ? WAVE_SINE : (preset == 12 ? WAVE_TRIANGLE : WAVE_PULSE));
+        synth.setEnv(voice, 2, preset == 14 ? 130 : (preset == 12 ? 450 : 750), 0, 120);
+        break;
+    case 18: case 19: case 20:
+        synth.setWave(voice, preset == 20 ? WAVE_SINE : WAVE_NOISE);
+        synth.setEnv(voice, 1, preset == 18 ? 35 : (preset == 19 ? 140 : 220), 0, 30);
+        break;
+    case 24: case 25: case 26:
+        synth.setWavetable(voice, preset_wavetables[preset - 24], 256, BITS_16);
+        synth.setWave(voice, WAVE_WAVETABLE);
+        break;
+    case 36:
+        synth.setWave(voice, WAVE_TRIANGLE);
+        synth.setVibrato(voice, 550, 700);
+        break;
+    case 37:
+        synth.setCustomWave(voice, ESP32Patches::AA_Saw);
+        synth.setTremolo(voice, 800, 200);
+        break;
+    default: synth.setWave(voice, WAVE_SINE); break;
+    }
+}
 
 static void synth_output_callback(int16_t *samples, int num_samples)
 {
+    static uint16_t applied_preset = UINT16_MAX;
+    static bool gate[SYNTH_UI_MAX_CONTACTS]{};
+    static uint32_t triggers[SYNTH_UI_MAX_CONTACTS]{};
+    static bool acid_gate = false;
+    static uint32_t acid_trigger = 0;
+    static int acid_midi = -1;
     synth_command_t command;
     while (xQueueReceive(synth_command_queue, &command, 0) == pdTRUE) {
-        if (command.pressed) {
-            synth.noteOn(0, command.frequency_centi_hz, command.volume);
-        } else {
-            synth.noteOff(0);
+        if(command.preset != applied_preset) {
+            for(uint16_t i = 0; i < SYNTH_UI_MAX_CONTACTS; ++i) {
+                apply_synth_preset(command.preset, i);
+                gate[i] = false;
+            }
+            applied_preset = command.preset;
+            acid_voice->reset();
+            acid_gate = false;
+            acid_midi = -1;
+            ESP_LOGI(TAG, "Preset=%u on %u voices, core %d", applied_preset, SYNTH_UI_MAX_CONTACTS, xPortGetCoreID());
+        }
+        if(applied_preset == 3) {
+            acid_voice->set_controls(command.cutoff_hz, command.resonance);
+            const synth_ui_note_t *priority = nullptr;
+            for(const auto &note : command.notes) {
+                if(note.pressed && (!priority || (int32_t)(note.trigger - priority->trigger) > 0)) priority = &note;
+            }
+            if(priority && priority->frequency_centi_hz > 0) {
+                const int midi = (int)lroundf(69.0f + 12.0f * log2f(priority->frequency_centi_hz / 44000.0f));
+                if(!acid_gate || priority->trigger != acid_trigger || midi != acid_midi) {
+                    const bool moving_held_note = acid_gate && priority->trigger == acid_trigger;
+                    acid_voice->note_on(midi, priority->accent, priority->slide || moving_held_note, priority->volume);
+                }
+                acid_voice->set_volume(priority->volume);
+                acid_trigger = priority->trigger;
+                acid_midi = midi;
+                acid_gate = true;
+            } else {
+                acid_voice->note_off();
+                acid_gate = false;
+            }
+            continue;
+        }
+        uint16_t active_count = 0;
+        for(const auto &note : command.notes) if(note.pressed) ++active_count;
+        if(active_count == 0) active_count = 1;
+        for(uint16_t i = 0; i < SYNTH_UI_MAX_CONTACTS; ++i) {
+            const synth_ui_note_t &note = command.notes[i];
+            if (note.pressed) {
+                if(!gate[i] || triggers[i] != note.trigger) {
+                    synth.noteOn(i, note.frequency_centi_hz, note.volume / active_count);
+                    gate[i] = true;
+                    triggers[i] = note.trigger;
+                } else {
+                    synth.setFrequency(i, note.frequency_centi_hz);
+                    synth.setVolume(i, note.volume / active_count);
+                }
+            } else {
+                if(gate[i]) synth.noteOff(i);
+                gate[i] = false;
+            }
         }
     }
 
@@ -75,9 +207,25 @@ static void synth_output_callback(int16_t *samples, int num_samples)
         return;
     }
 
+    if(applied_preset == 3) {
+        const int64_t start = esp_timer_get_time();
+        acid_voice->render(samples, num_samples);
+        const uint32_t used = (uint32_t)(esp_timer_get_time() - start);
+        static uint32_t worst = 0;
+        static int64_t last_log = 0;
+        if(used > worst) worst = used;
+        if(esp_timer_get_time() - last_log > 2000000) {
+            ESP_LOGI(TAG, "Open303 core=%d render=%lu us worst=%lu deadline=%d us faults=%u; boot bench avg=%lu worst=%lu",
+                xPortGetCoreID(), (unsigned long)used, (unsigned long)worst,
+                num_samples * 1000000 / SAMPLE_RATE, acid_voice->fault_count(),
+                (unsigned long)acid_benchmark_average_us, (unsigned long)acid_benchmark_worst_us);
+            last_log = esp_timer_get_time();
+        }
+    }
     for (int i = 0; i < num_samples; i++) {
-        synth_stereo_buffer[i * 2] = samples[i];
-        synth_stereo_buffer[i * 2 + 1] = samples[i];
+        const int16_t sample = samples[i];
+        synth_stereo_buffer[i * 2] = sample;
+        synth_stereo_buffer[i * 2 + 1] = sample;
     }
     esp_codec_dev_write(speaker_codec_handle, synth_stereo_buffer,
                         num_samples * 2 * (int)sizeof(int16_t));
@@ -89,11 +237,11 @@ static void queue_synth_command(uint32_t frequency_centi_hz, uint16_t volume,
     if (synth_command_queue == NULL) {
         return;
     }
-    const synth_command_t command = {
-        .frequency_centi_hz = frequency_centi_hz,
-        .volume = volume,
-        .pressed = pressed,
-    };
+    synth_command_t command{};
+    command.preset = desired_preset;
+    command.cutoff_hz = desired_cutoff;
+    command.resonance = desired_resonance;
+    command.notes[0] = {frequency_centi_hz, volume, pressed, 0, false, false};
     xQueueOverwrite(synth_command_queue, &command);
 }
 
@@ -160,8 +308,53 @@ esp_err_t init_i2s(void)
     return ESP_OK;
 }
 
+struct AcidBenchmark {
+    TaskHandle_t caller;
+    bool passed;
+};
+
+static void benchmark_acid(void *arg)
+{
+    auto *result = static_cast<AcidBenchmark *>(arg);
+    acid_voice = new(std::nothrow) Open303Voice(SAMPLE_RATE);
+    result->passed = acid_voice != nullptr;
+    if(acid_voice) {
+        int16_t buffer[128];
+        uint64_t total = 0;
+        for(unsigned block = 0; block < 128; ++block) {
+            acid_voice->set_controls(80 + (block % 16) * 390, block % 2 ? 255 : 0);
+            acid_voice->note_on(36 + block % 12, block % 4 == 0, block % 4 == 2, 190);
+            const int64_t start = esp_timer_get_time();
+            acid_voice->render(buffer, 128);
+            const uint32_t used = (uint32_t)(esp_timer_get_time() - start);
+            total += used;
+            if(used > acid_benchmark_worst_us) acid_benchmark_worst_us = used;
+            if(block % 8 == 0) vTaskDelay(1);
+        }
+        acid_benchmark_average_us = total / 128;
+        result->passed = acid_voice->fault_count() == 0 && acid_benchmark_worst_us < 3200;
+        ESP_LOGI(TAG, "Open303 benchmark core=%d avg=%lu worst=%lu us / 4000 us deadline: %s",
+            xPortGetCoreID(), (unsigned long)acid_benchmark_average_us,
+            (unsigned long)acid_benchmark_worst_us, result->passed ? "PASS" : "FAIL");
+        acid_voice->reset();
+    }
+    xTaskNotifyGive(result->caller);
+    vTaskDelete(nullptr);
+}
+
 esp_err_t init_synth(void)
 {
+    AcidBenchmark benchmark{xTaskGetCurrentTaskHandle(), false};
+    ESP_RETURN_ON_FALSE(xTaskCreatePinnedToCore(benchmark_acid, "303Bench", 16384, &benchmark,
+        6, nullptr, 1) == pdPASS, ESP_ERR_NO_MEM, TAG, "Failed to start Open303 benchmark");
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    ESP_RETURN_ON_FALSE(benchmark.passed, ESP_FAIL, TAG, "Open303 missed performance/stability check");
+    for(unsigned i = 0; i < 256; ++i) {
+        const float phase = 2.0f * (float)M_PI * i / 256;
+        preset_wavetables[0][i] = (int16_t)(15000 * sinf(phase) + 6500 * sinf(5 * phase) + 3500 * sinf(9 * phase));
+        preset_wavetables[1][i] = (int16_t)(14000 * sinf(phase) + 8000 * sinf(3 * phase) + 4000 * sinf(4 * phase));
+        preset_wavetables[2][i] = (int16_t)((i / 32) * 8000 - 28000);
+    }
     synth_command_queue = xQueueCreate(1, sizeof(synth_command_t));
     ESP_RETURN_ON_FALSE(synth_command_queue != NULL, ESP_ERR_NO_MEM, TAG,
                         "Failed to allocate synth command queue");
@@ -197,6 +390,8 @@ esp_err_t init_display(void)
                         "Failed to enable display backlight");
 
     esp_lv_adapter_config_t lvgl_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+    /* SynthTask is pinned to P4 core 1; keep UI work on core 0. */
+    lvgl_cfg.task_core_id = 0;
     ESP_RETURN_ON_ERROR(esp_lv_adapter_init(&lvgl_cfg), TAG,
                         "Failed to initialize LVGL adapter");
 
@@ -212,6 +407,20 @@ esp_err_t init_display(void)
     return ESP_OK;
 }
 
+static esp_err_t read_touch_contacts(esp_lcd_touch_handle_t tp, esp_lcd_touch_point_data_t *points,
+                                     uint8_t *count, uint8_t max_count, void *)
+{
+    ESP_RETURN_ON_ERROR(esp_lcd_touch_read_data(tp), TAG, "Touch read failed");
+    const esp_err_t result = esp_lcd_touch_get_data(tp, points, count, max_count);
+    static uint8_t previous = 0, highest = 0;
+    if(result == ESP_OK && *count != previous) {
+        previous = *count;
+        if(*count > highest) highest = *count;
+        ESP_LOGI(TAG, "Touch contacts=%u highest observed=%u (driver limit=%u)", *count, highest, SYNTH_UI_MAX_CONTACTS);
+    }
+    return result;
+}
+
 esp_err_t init_touch(void)
 {
     const bsp_display_cfg_t touch_cfg = {
@@ -223,8 +432,11 @@ esp_err_t init_touch(void)
     };
     ESP_RETURN_ON_ERROR(bsp_touch_new(&touch_cfg, &touch_handle), TAG,
                         "Failed to initialize GT911-compatible touch");
-    const esp_lv_adapter_touch_config_t lvgl_touch_cfg =
+    esp_lv_adapter_touch_config_t lvgl_touch_cfg =
         ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(lvgl_display, touch_handle);
+    lvgl_touch_cfg.multi_touch.mode = ESP_LV_ADAPTER_TOUCH_MODE_MULTI_CONTROL;
+    lvgl_touch_cfg.multi_touch.pointers = SYNTH_UI_MAX_CONTACTS;
+    lvgl_touch_cfg.callbacks.custom_touch_read = read_touch_contacts;
     ESP_RETURN_ON_FALSE(esp_lv_adapter_register_touch(&lvgl_touch_cfg) != NULL,
                         ESP_FAIL, TAG, "Failed to register LVGL touch input");
     ESP_LOGI(TAG, "Touch initialized; polling GT911-compatible controller");
@@ -241,11 +453,37 @@ static void ui_note_off(void)
     queue_synth_command(0, 0, false);
 }
 
+static void ui_select_preset(uint16_t preset)
+{
+    desired_preset = preset;
+    queue_synth_command(0, 0, false);
+}
+
+static void ui_set_notes(const synth_ui_note_t *notes)
+{
+    if(!synth_command_queue) return;
+    synth_command_t command{};
+    command.preset = desired_preset;
+    command.cutoff_hz = desired_cutoff;
+    command.resonance = desired_resonance;
+    memcpy(command.notes, notes, sizeof(command.notes));
+    xQueueOverwrite(synth_command_queue, &command);
+}
+
+static void ui_set_acid_filter(uint16_t cutoff_hz, uint8_t resonance)
+{
+    desired_cutoff = cutoff_hz;
+    desired_resonance = resonance;
+}
+
 static void init_ui(void)
 {
     const synth_ui_audio_callbacks_t audio = {
         .note_on = ui_note_on,
         .note_off = ui_note_off,
+        .select_preset = ui_select_preset,
+        .set_notes = ui_set_notes,
+        .set_acid_filter = ui_set_acid_filter,
     };
     synth_ui_init(lv_screen_active(), &audio);
 }

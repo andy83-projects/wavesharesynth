@@ -4,6 +4,7 @@ idf_component_register(
     REQUIRES
         esp32_p4_wifi6_touch_lcd_xc
         esp32synth
+        open303
         esp_lvgl_adapter
         lvgl
         esp_system
