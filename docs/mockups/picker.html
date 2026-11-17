@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wavesharesynth — instrument picker mockup</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #0b0b0b; color: #888; font: 13px -apple-system, system-ui, sans-serif; }
+  canvas { width: 540px; height: 540px; max-width: 92vw; max-height: 92vw; border-radius: 50%; touch-action: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="w" width="720" height="720" aria-label="Click-wheel instrument picker mockup"></canvas>
+<div>Circle the outer band to scroll · tap center to select · Menu to go back · Audition is the only sound</div>
+<script>
+// Reference mockup — values mirror main/ui/ui_theme.h.
+// SILENT picker: no scroll click, no auto-audition. Sound only on an Audition tap.
+const c = document.getElementById('w'), x = c.getContext('2d'), R = 360;
+const T = {
+  Instruments: ['Synth','Keys','Plucked','Drums','Wavetables','Samples'],
+  Synth: ['Saw lead','Pulse lead','Filter synth','Acid bass','Sub bass'],
+  Keys: ['FM e-piano','FM bell','Organ B3','Organ + Leslie'],
+  Plucked: ['Nylon guitar','Harp','Pizzicato'],
+  Drums: ['Noise hat','Noise snare','Sine kick'],
+  Wavetables: ['Glass','Formant','Digital'],
+  Samples: ['Amen break','Lo-fi kit','Choir pad']
+};
+const WAVE = { Synth: 'sawtooth', Keys: 'sine', Plucked: 'triangle', Drums: 'square', Wavetables: 'square', Samples: 'triangle' };
+let path = ['Instruments'], idx = 0, scroll = 0, acc = 0, lastA = null, mode = null, moved = 0, finger = null;
+let flashTick = -1, flashT = 0, toast = '', toastT = 0, ac = null, downPt = null;
+const list = () => T[path[path.length - 1]];
+function pos(e) { const b = c.getBoundingClientRect(); return { x: (e.clientX - b.left) * 720 / b.width, y: (e.clientY - b.top) * 720 / b.height }; }
+function ang(p) { return Math.atan2(p.x - R, -(p.y - R)) * 180 / Math.PI; }
+function audition() {
+  try {
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    const cat = path.length > 1 ? path[1] : list()[idx];
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = WAVE[cat] || 'sine'; o.frequency.value = cat === 'Drums' ? 110 : 262;
+    g.gain.setValueAtTime(0.08, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + (cat === 'Plucked' || cat === 'Drums' ? 0.35 : 0.7));
+    o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.75);
+  } catch (e) {}
+}
+function say(s) { toast = s; toastT = performance.now(); }
+function select() {
+  const item = list()[idx];
+  if (T[item]) { path.push(item); idx = 0; scroll = 0; }
+  else { say('Loaded ' + item); path = ['Instruments']; idx = 0; scroll = 0; }
+}
+function back() { if (path.length > 1) { const p = path.pop(); idx = Math.max(0, list().indexOf(p)); scroll = idx; } }
+function step(a) { flashTick = Math.round((((a % 360) + 360) % 360) / 24) % 15; flashT = performance.now(); }
+c.addEventListener('pointerdown', e => {
+  const p = pos(e), r = Math.hypot(p.x - R, p.y - R); if (r > 352) return;
+  c.setPointerCapture(e.pointerId); downPt = p; moved = 0;
+  if (r >= 235) { mode = 'wheel'; lastA = ang(p); finger = p; } else mode = 'center';
+});
+c.addEventListener('pointermove', e => {
+  if (mode !== 'wheel') return;
+  const p = pos(e); finger = p; const a = ang(p);
+  let d = a - lastA; if (d > 180) d -= 360; if (d < -180) d += 360;
+  lastA = a; acc += d; moved += Math.abs(d);
+  const n = list().length;
+  while (acc >= 24) { acc -= 24; if (idx < n - 1) { idx++; step(a); } }
+  while (acc <= -24) { acc += 24; if (idx > 0) { idx--; step(a); } }
+});
+c.addEventListener('pointerup', () => {
+  if (mode === 'center') select();
+  else if (mode === 'wheel' && moved < 8) {
+    const a = ang(downPt);
+    if (Math.abs(a) < 30) back();
+    else if (Math.abs(Math.abs(a) - 180) < 30) audition();
+    else if (Math.abs(a - 90) < 30) say('Next program');
+    else if (Math.abs(a + 90) < 30) say('Previous program');
+  }
+  mode = null; finger = null; acc = 0;
+});
+function draw(now) {
+  scroll += (idx - scroll) * 0.25;
+  x.clearRect(0, 0, 720, 720); x.save(); x.beginPath(); x.arc(R, R, R, 0, Math.PI * 2); x.clip();
+  x.fillStyle = '#161615'; x.fillRect(0, 0, 720, 720);
+  x.beginPath(); x.arc(R, R, 285, 0, Math.PI * 2); x.strokeStyle = mode === 'wheel' ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.05)'; x.lineWidth = 100; x.stroke();
+  for (let i = 0; i < 15; i++) {
+    const a = i * 24 * Math.PI / 180, on = i === flashTick && now - flashT < 180;
+    x.beginPath(); x.moveTo(R + 326 * Math.sin(a), R - 326 * Math.cos(a)); x.lineTo(R + 336 * Math.sin(a), R - 336 * Math.cos(a));
+    x.strokeStyle = on ? '#EF9F27' : 'rgba(255,255,255,0.15)'; x.lineWidth = on ? 5 : 3; x.stroke();
+  }
+  const n = list().length;
+  if (n > 1) {
+    x.beginPath(); x.arc(R, R, 350, -Math.PI / 2 - 1.0, -Math.PI / 2 + 1.0); x.strokeStyle = 'rgba(255,255,255,0.1)'; x.lineWidth = 6; x.stroke();
+    const t = -Math.PI / 2 - 1.0 + 2.0 * (scroll / (n - 1));
+    x.beginPath(); x.arc(R, R, 350, t - 0.12, t + 0.12); x.strokeStyle = '#EF9F27'; x.stroke();
+  }
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.font = '500 22px sans-serif'; x.fillStyle = 'rgba(255,255,255,0.6)';
+  x.fillText('Menu', R, R - 287); x.fillText('Audition', R, R + 287);
+  x.font = '22px sans-serif'; x.fillText('◀◀', R - 287, R); x.fillText('▶▶', R + 287, R);
+  if (finger) { x.beginPath(); x.arc(finger.x, finger.y, 26, 0, Math.PI * 2); x.fillStyle = 'rgba(239,159,39,0.3)'; x.fill(); }
+  x.font = '18px sans-serif'; x.fillStyle = 'rgba(255,255,255,0.45)'; x.fillText(path.join(' › '), R, R - 178);
+  x.save(); x.beginPath(); x.rect(0, R - 150, 720, 300); x.clip();
+  const L = list();
+  x.beginPath(); x.roundRect(R - 160, R - 26, 320, 52, 26); x.fillStyle = '#EF9F27'; x.fill();
+  for (let i = 0; i < L.length; i++) {
+    const y = R + (i - scroll) * 58, d = Math.abs(y - R); if (d > 150) continue; const sel = i === idx;
+    x.font = (sel ? '500 ' : '') + '26px sans-serif';
+    x.fillStyle = sel ? '#412402' : 'rgba(255,255,255,' + Math.max(0.15, 0.75 - d / 220).toFixed(2) + ')';
+    x.fillText(L[i] + (T[L[i]] ? '  ›' : ''), R, y);
+  }
+  x.restore();
+  if (toast && now - toastT < 1600) { x.font = '500 20px sans-serif'; x.fillStyle = '#FAC775'; x.fillText(toast, R, R + 182); }
+  else { x.font = '17px sans-serif'; x.fillStyle = 'rgba(255,255,255,0.35)'; x.fillText('Tap center to select', R, R + 182); }
+  x.restore(); requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

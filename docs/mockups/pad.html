@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wavesharesynth — pad screen mockup</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #0b0b0b; color: #bbb; font: 14px -apple-system, system-ui, sans-serif; }
+  canvas { width: 540px; height: 540px; max-width: 92vw; max-height: 92vw; border-radius: 50%; touch-action: none; cursor: crosshair; }
+  .row { display: flex; gap: 10px; }
+  button { background: transparent; color: #ddd; border: 1px solid #444; border-radius: 8px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { background: #1c1c1b; }
+  #api { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #888; }
+</style>
+</head>
+<body>
+<canvas id="pad" width="720" height="720" aria-label="Round XY pad mockup"></canvas>
+<div class="row">
+  <button id="prev">&lsaquo; Prev</button>
+  <button id="hold">Hold: off</button>
+  <button id="next">Next program &rsaquo;</button>
+</div>
+<div id="api"></div>
+<script>
+// Reference mockup — values mirror main/ui/ui_theme.h. Drag on the pad to play.
+const c = document.getElementById('pad'), x = c.getContext('2d'), R = 360;
+const N = ['C3','D#3','F3','G3','A#3','C4','D#4','F4','G4','A#4','C5'];
+const F = {
+  hz: u => { const f = 20 * Math.pow(1000, u); return f < 1000 ? Math.round(f) + ' Hz' : (f / 1000).toFixed(1) + ' kHz'; },
+  q: u => 'Q ' + (0.5 + u * 11.5).toFixed(1),
+  pct: u => Math.round(u * 100) + '%',
+  note: u => N[Math.min(10, Math.floor(u * 11))],
+  ratio: u => (1 + Math.round(u * 7)) + ':1',
+  ms: u => Math.round(40 + (1 - u) * 360) + ' ms',
+  oct: u => (1 + Math.min(2, Math.floor(u * 3))) + ' oct',
+  rate: u => (0.5 + u * 15.5).toFixed(1) + ' Hz',
+  cents: u => Math.round(u * 100) + ' ct',
+  bits: u => (16 - Math.round(u * 13)) + ' bit'
+};
+const P = [
+  ['Filter sweep','Cutoff','Resonance','hz','q',0,'FX_BiquadFilter ep[0], ep[2]'],
+  ['Band sweep','Center','Width','hz','q',0,'FX_BiquadFilter mode 2'],
+  ['Acid','Cutoff','Resonance','hz','pct',0,'SVF custom DSP + slideFreqTo'],
+  ['Touch scale','Note','Filter','note','hz',1,'setFrequency + DSP_BiquadOsc cp'],
+  ['FM bell','Ratio','Mod index','ratio','pct',0,'FM_Custom cp[0], cp[2]'],
+  ['Arp','Rate','Span','ms','oct',0,'setArpeggio'],
+  ['Vibrato','Rate','Depth','rate','cents',0,'setVibrato'],
+  ['Tremolo gate','Rate','Depth','rate','pct',0,'setTremolo'],
+  ['PWM lead','Note','Pulse width','note','pct',1,'setFrequency + setPulseWidth'],
+  ['Bitcrush','Bits','Cutoff','bits','hz',0,'setMasterBitcrush + FX_BiquadFilter'],
+  ['Pluck','Note','Damping','note','pct',1,'EKS_Guitar + noteOn'],
+  ['Organ','Note','Reverb','note','pct',1,'HammondB3 + DSP_HammondLeslie dp[1]']
+];
+let trail = [], down = false, demo = true, hold = false, cur = null, prog = 0;
+function pos(e) { const b = c.getBoundingClientRect(); return { x: (e.clientX - b.left) * 720 / b.width, y: (e.clientY - b.top) * 720 / b.height }; }
+function clampIn(p) { const d = Math.hypot(p.x - R, p.y - R); if (d > 300) { p.x = R + (p.x - R) * 300 / d; p.y = R + (p.y - R) * 300 / d; } return p; }
+function snap(p) { if (!P[prog][5]) return p; const w = 600 / 11, i = Math.max(0, Math.min(10, Math.floor((p.x - 60) / w))); return { x: 60 + w * i + w / 2, y: p.y }; }
+function add(p) { cur = clampIn(p); trail.push({ x: cur.x, y: cur.y, t: performance.now() }); }
+c.addEventListener('pointerdown', e => { const p = pos(e); if (Math.hypot(p.x - R, p.y - R) > 300) return; demo = false; down = true; c.setPointerCapture(e.pointerId); trail = []; add(p); });
+c.addEventListener('pointermove', e => { if (down) add(pos(e)); });
+c.addEventListener('pointerup', () => { down = false; if (!hold) cur = null; });
+document.getElementById('hold').onclick = e => { hold = !hold; e.currentTarget.textContent = 'Hold: ' + (hold ? 'on' : 'off'); if (!hold && !down) cur = null; };
+document.getElementById('next').onclick = () => { prog = (prog + 1) % 12; };
+document.getElementById('prev').onclick = () => { prog = (prog + 11) % 12; };
+function draw(now) {
+  const p = P[prog];
+  x.clearRect(0, 0, 720, 720); x.save(); x.beginPath(); x.arc(R, R, R, 0, Math.PI * 2); x.clip();
+  x.fillStyle = '#161615'; x.fillRect(0, 0, 720, 720);
+  x.strokeStyle = 'rgba(255,255,255,0.07)'; x.lineWidth = 2;
+  if (p[5]) {
+    const w = 600 / 11;
+    for (let i = 0; i <= 11; i++) { x.beginPath(); x.moveTo(60 + w * i, 0); x.lineTo(60 + w * i, 720); x.stroke(); }
+    x.fillStyle = 'rgba(255,255,255,0.3)'; x.font = '15px sans-serif'; x.textAlign = 'center';
+    for (let i = 0; i < 11; i++) x.fillText(N[i], 60 + w * i + w / 2, 470);
+    for (let i = 60; i < 720; i += 60) { x.beginPath(); x.moveTo(0, i); x.lineTo(720, i); x.stroke(); }
+  } else {
+    for (let i = 60; i < 720; i += 60) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i, 720); x.stroke(); x.beginPath(); x.moveTo(0, i); x.lineTo(720, i); x.stroke(); }
+  }
+  for (let i = 0; i < 12; i++) { const a0 = -Math.PI / 2 + i * Math.PI / 6 + 0.04; x.beginPath(); x.arc(R, R, 338, a0, a0 + Math.PI / 6 - 0.08); x.strokeStyle = i === prog ? '#EF9F27' : 'rgba(255,255,255,0.13)'; x.lineWidth = 18; x.stroke(); }
+  x.beginPath(); x.arc(R, R, 302, 0, Math.PI * 2); x.strokeStyle = 'rgba(255,255,255,0.12)'; x.lineWidth = 2; x.stroke();
+  if (demo) { const t = now / 1000; add({ x: R + 170 * Math.sin(t * 1.3), y: R + 150 * Math.sin(t * 2.1 + 0.6) }); }
+  trail = trail.filter(q => now - q.t < 700);
+  for (const q of trail) { const a = (now - q.t) / 700; x.beginPath(); x.arc(q.x, q.y, 30 * (1 - a) + 4, 0, Math.PI * 2); x.fillStyle = 'rgba(239,159,39,' + ((1 - a) * 0.45).toFixed(3) + ')'; x.fill(); }
+  let txt = 'Touch to play';
+  if (cur) {
+    const s = snap(cur);
+    if (p[5]) { const w = 600 / 11; x.fillStyle = 'rgba(239,159,39,0.12)'; x.fillRect(s.x - w / 2, 0, w, 720); }
+    x.strokeStyle = 'rgba(239,159,39,0.35)'; x.lineWidth = 2;
+    x.beginPath(); x.moveTo(s.x, 0); x.lineTo(s.x, 720); x.stroke(); x.beginPath(); x.moveTo(0, s.y); x.lineTo(720, s.y); x.stroke();
+    for (const [r, f] of [[40, 'rgba(250,199,117,0.25)'], [24, '#FAC775'], [10, '#ffffff']]) { x.beginPath(); x.arc(s.x, s.y, r, 0, Math.PI * 2); x.fillStyle = f; x.fill(); }
+    const ux = Math.max(0, Math.min(1, ((p[5] ? s.x : cur.x) - 60) / 600)), uy = Math.max(0, Math.min(1, (660 - cur.y) / 600));
+    txt = p[1] + ' ' + F[p[3]](ux) + ' · ' + p[2].toLowerCase() + ' ' + F[p[4]](uy);
+  }
+  x.textAlign = 'center';
+  x.fillStyle = 'rgba(255,255,255,0.88)'; x.font = '500 30px sans-serif'; x.fillText(p[0], R, 100);
+  x.fillStyle = 'rgba(255,255,255,0.5)'; x.font = '22px sans-serif'; x.fillText('P' + String(prog + 1).padStart(2, '0') + ' · CPU 28%', R, 134);
+  x.font = '20px sans-serif'; x.fillText(txt, R, 612);
+  x.save(); x.translate(92, R); x.rotate(-Math.PI / 2); x.fillStyle = 'rgba(255,255,255,0.35)'; x.font = '17px sans-serif'; x.fillText(p[2] + ' ↑', 0, 0); x.restore();
+  x.fillStyle = 'rgba(255,255,255,0.35)'; x.font = '17px sans-serif'; x.fillText(p[1] + ' →', R, 572);
+  x.beginPath(); x.roundRect(R - 46, 504, 92, 32, 16); x.fillStyle = hold ? '#EF9F27' : 'rgba(255,255,255,0.1)'; x.fill();
+  x.fillStyle = hold ? '#412402' : 'rgba(255,255,255,0.6)'; x.font = '18px sans-serif'; x.fillText('Hold', R, 526);
+  x.restore();
+  document.getElementById('api').textContent = p[6];
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
