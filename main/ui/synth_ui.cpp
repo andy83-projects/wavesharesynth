@@ -226,6 +226,16 @@ static void set_pad_audio(int x, int y)
     lv_label_set_text_fmt(g_ui.readout, "%.1f Hz · vol %u", freq / 100.0, volume);
 }
 
+static void ring_program_event(lv_event_t *event)
+{
+    if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    const uint8_t program = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(event)));
+    if(program >= UI_PROG_COUNT) return;
+    g_ui.program = program;
+    g_ui.instrument_name = kPrograms[program].name;
+    update_pad_text();
+}
+
 static void pad_event(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
@@ -408,6 +418,9 @@ static void picker_event(lv_event_t *event)
     }
     if(code != LV_EVENT_RELEASED) return;
     if(!g_ui.wheel) {
+        const uint8_t count = g_ui.picker_in_group ? kMenu[g_ui.menu_group].count : sizeof(kMenu) / sizeof(kMenu[0]);
+        const int row = (point.y - 225 + UI_LIST_ROW_H / 2) / UI_LIST_ROW_H;
+        if(row >= 0 && row < count) g_ui.menu_item = static_cast<uint8_t>(row);
         select_picker_item();
         return;
     }
@@ -484,7 +497,7 @@ static void create_pad(void)
         lv_obj_set_style_arc_color(arc, col(i == 0 ? UI_COL_ACCENT : UI_COL_FG), LV_PART_INDICATOR);
         lv_obj_set_style_arc_opa(arc, i == 0 ? LV_OPA_COVER : UI_OPA_SEG_IDLE, LV_PART_INDICATOR);
         lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
-        lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
 
         lv_obj_t *ring_label = label(g_ui.pad, kPrograms[i].ring_name, UI_FONT_RING, UI_OPA_TEXT_LABEL);
         lv_obj_set_width(ring_label, 58);
@@ -493,6 +506,15 @@ static void create_pad(void)
         lv_obj_set_pos(ring_label,
                        (int)(UI_CX + cosf(angle) * 320.0f - 29),
                        (int)(UI_CY + sinf(angle) * 320.0f - 8));
+
+        lv_obj_t *ring_button = lv_obj_create(g_ui.pad);
+        style_plain(ring_button);
+        lv_obj_set_size(ring_button, 74, 34);
+        lv_obj_set_pos(ring_button,
+                       (int)(UI_CX + cosf(angle) * 338.0f - 37),
+                       (int)(UI_CY + sinf(angle) * 338.0f - 17));
+        lv_obj_add_event_cb(ring_button, ring_program_event, LV_EVENT_CLICKED,
+                            reinterpret_cast<void *>(static_cast<uintptr_t>(i)));
     }
 
     lv_obj_t *instrument = lv_obj_create(g_ui.pad);
