@@ -360,8 +360,8 @@ static void arp_event(lv_event_t *event)
     lv_label_set_text(g_ui.arp_label, g_ui.arp_enabled ? "Arp on" : "Arp off");
     lv_obj_set_style_bg_color(g_ui.arp_button, col(g_ui.arp_enabled ? UI_COL_ACCENT : UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.arp_button, g_ui.arp_enabled ? LV_OPA_COVER : UI_OPA_PILL_IDLE, 0);
-    lv_obj_set_style_text_color(g_ui.arp_label, col(g_ui.arp_enabled ? UI_COL_ACCENT_TEXT : UI_COL_FG), 0);
-    lv_obj_set_style_text_opa(g_ui.arp_label, g_ui.arp_enabled ? LV_OPA_COVER : UI_OPA_TEXT_LABEL, 0);
+    lv_obj_set_style_text_color(g_ui.arp_label, col(g_ui.arp_enabled ? UI_COL_ACCENT_TEXT : UI_COL_FG), LV_PART_MAIN);
+    lv_obj_set_style_text_opa(g_ui.arp_label, g_ui.arp_enabled ? LV_OPA_COVER : UI_OPA_TEXT_LABEL, LV_PART_MAIN);
     ESP_LOGI("SYNTH_UI", "Arp enabled=%d", g_ui.arp_enabled);
     publish_contacts();
 }

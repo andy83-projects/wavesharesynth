@@ -10,12 +10,12 @@ Open303Voice::Open303Voice(float sample_rate) : engine(std::make_unique<rosic::O
     engine->setVolume(-12.0f);
     engine->setCutoff(cutoff);
     engine->setResonance(resonance);
-    engine->setEnvMod(100.0f);    /* Full filter envelope sweep for classic acid "woop" */
+    engine->setEnvMod(80.0f);     /* Moderate filter envelope for balance between arp and sustained */
     engine->setDecay(250.0f);
-    engine->setAccent(100.0f);    /* Maximize accent cutoff kick */
-    engine->setAccentDecay(120.0f); /* Fast accent decay for punchy character */
+    engine->setAccent(90.0f);     /* Punchy accents without harshness */
+    engine->setAccentDecay(150.0f); /* Medium decay for musical phrasing */
     engine->setSlideTime(60.0f);
-    engine->setOutputDrive(10.0f); /* Slight boost for aggression */
+    engine->setOutputDrive(9.5f); /* Warm saturation */
 }
 
 Open303Voice::~Open303Voice() = default;
