@@ -5,6 +5,5 @@ idf_component_register(
         esp32_p4_wifi6_touch_lcd_xc
         esp_system
         esp_timer
-        driver
         freertos
 )
