@@ -297,7 +297,7 @@ static void publish_contacts(void)
     }
     if(count == 0) {
         g_ui.arp = false;
-        lv_label_set_text(g_ui.readout, "Touch to play · hold for arp");
+        lv_label_set_text(g_ui.readout, "Touch to play");
     } else if(g_ui.arp) {
         synth_ui_note_t held[SYNTH_UI_MAX_CONTACTS]{};
         unsigned n = 0;
@@ -330,7 +330,7 @@ static void publish_contacts(void)
         }
         lv_label_set_text_fmt(g_ui.readout, "ARP · %u held · 120 BPM", count);
     } else {
-        lv_label_set_text_fmt(g_ui.readout, "%u note%s · hold for arp", count, count == 1 ? "" : "s");
+        lv_label_set_text_fmt(g_ui.readout, "%u note%s", count, count == 1 ? "" : "s");
     }
     if(g_ui.acid_sweep) lv_label_set_text_fmt(g_ui.readout, "ACID%s · %u Hz · res %u%%",
         g_ui.arp ? " ARP" : "", g_ui.acid_cutoff, g_ui.acid_resonance * 100 / 255);
@@ -348,22 +348,6 @@ static void stop_contacts(void)
     publish_contacts();
     hide(g_ui.touch_halo); hide(g_ui.touch_core); hide(g_ui.touch_dot);
     hide(g_ui.cross_x); hide(g_ui.cross_y);
-}
-
-static void contacts_timer(lv_timer_t *)
-{
-    if(!g_ui.arp) {
-        for(const auto &contact : g_ui.contacts) {
-            if(contact.down && !contact.ring && lv_tick_elaps(contact.stationary_since) >= 500) {
-                g_ui.arp = true;
-                g_ui.arp_started = lv_tick_get();
-                g_ui.arp_step = UINT32_MAX;
-                ESP_LOGI("SYNTH_UI", "Arpeggiator started");
-                break;
-            }
-        }
-    }
-    if(g_ui.arp) publish_contacts();
 }
 
 static void select_ring_program(const lv_point_t &point)
@@ -873,5 +857,4 @@ void synth_ui_init(lv_obj_t *screen, const synth_ui_audio_callbacks_t *audio)
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
     create_pad();
     create_picker();
-    lv_timer_create(contacts_timer, 20, nullptr);
 }

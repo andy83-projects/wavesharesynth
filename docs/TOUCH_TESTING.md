@@ -11,9 +11,8 @@ logging immediately. Current local ESP-IDF is 5.5.6; GitHub CI uses 5.5.5.
 ## Controls
 
 - Tap or move on the pad: one note per finger, up to five configured voices.
-- Hold any pad contact within a 12-pixel radius for 500 ms: start arpeggiation.
-- Multiple held notes: ascending pitch order, one note per 125 ms at 120 BPM.
-- One held note: root, minor third, fifth, octave.
+- Automatic arpeggiation is disabled. Holding a finger keeps its note without
+  starting a timed pattern; the instrument's natural envelope still applies.
 - Lift all fingers: stop. Hold retains the released notes until switched off.
 - Open Instrument: stop all pad notes and arpeggiation. Picker interaction uses
   one pointer at a time and does not start the arpeggiator.
@@ -23,8 +22,7 @@ logging immediately. Current local ESP-IDF is 5.5.6; GitHub CI uses 5.5.5.
   cutoff and resonance. Other presets retain normal multi-touch pitch control.
   Acid is now a dedicated monophonic Open303 voice at 32 kHz with 4x oversampling.
   Its pitch range is C1–C3, and finger height does not reduce note volume.
-  The arpeggiator accents every fourth step and uses legato slides on two steps
-  out of four. The model has a 250 ms filter decay and 9 dB of oversampled drive.
+  The model has a 250 ms filter decay and 9 dB of oversampled drive.
   Other instruments remain polyphonic through ESP32Synth.
 
 Observed on hardware: five simultaneous contacts have been logged. The revised
@@ -41,7 +39,7 @@ bass body; the current voicing addresses that feedback and needs listening confi
 2. Lift a middle finger while keeping the others down. Its note must release
    without swapping the pitches of the remaining fingers.
 3. Move fingers continuously: notes should follow without starting the arp.
-4. Hold still for 500 ms. Check `Arpeggiator started`, the ARP readout, and sound.
+4. Hold still for several seconds. Verify no arpeggiator starts and pitch stays fixed.
 5. Change the held chord, release it, and repeat with Hold enabled and disabled.
 6. Open the picker while notes are held. Verify silence and normal wheel input.
 7. Repeat with Saw, FM bell, and Organ; watch for panics, stuck notes, or distortion.
