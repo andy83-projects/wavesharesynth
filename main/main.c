@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 
 #include "driver/i2s_std.h"
+#include "driver/gpio.h"
 
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
@@ -66,7 +67,18 @@ esp_err_t init_i2s(void)
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = BSP_I2S_GPIO_CFG,
+        .gpio_cfg = {
+            .mclk = I2S_MCLK_PIN,
+            .bclk = I2S_BCK_PIN,
+            .ws = I2S_WS_PIN,
+            .dout = I2S_DO_PIN,
+            .din = I2S_DI_PIN,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv = false,
+            },
+        },
     };
     std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE;
 
