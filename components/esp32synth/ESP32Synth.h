@@ -44,11 +44,10 @@
     #include "esp_rom_sys.h"
     #include "esp_system.h"
     #include "esp_cpu.h"
-    #include "esp_clk.h"
     #include "esp_attr.h"
 
     // System Abstraction - Pure ESP-IDF
-    #define SYNTH_GET_CPU_FREQ_MHZ() (esp_clk_cpu_freq() / 1000000)
+    #define SYNTH_GET_CPU_FREQ_MHZ() CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
     #define SYNTH_MICROS()           (uint32_t)esp_timer_get_time()
     #define SYNTH_DELAY_US(us)       esp_rom_delay_us(us)
 
