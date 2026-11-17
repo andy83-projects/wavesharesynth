@@ -10,4 +10,5 @@ idf_component_register(
         esp_system
         esp_timer
         freertos
+        nvs_flash
 )

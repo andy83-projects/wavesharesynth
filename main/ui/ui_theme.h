@@ -75,6 +75,17 @@ extern "C" {
 #define UI_PROG_RING_W         18
 #define UI_PROG_SEG_DEG        30
 #define UI_PROG_SEG_GAP_DEG    2    /* gap at each end of a segment (~0.04 rad) */
+#define UI_LONG_PRESS_MS       600  /* hold on a wedge to reassign its instrument */
+#define UI_LONG_PRESS_SLOP     14   /* px of drift allowed during the hold        */
+#define UI_TAP_MAX_MS          300  /* a wedge press shorter than this is a tap   */
+#define UI_DOUBLE_TAP_MS       350  /* second tap within this opens note editor */
+
+/* Per-wedge note editor */
+#define UI_NOTES_TABS_Y        100
+#define UI_NOTES_TOP           172
+#define UI_NOTES_ROW_H         74
+#define UI_NOTES_ROW_W         440
+#define UI_NOTES_BTN           64
 
 /* Value mapping: X/Y normalised over this box (pad diameter) */
 #define UI_MAP_MIN             60
@@ -160,6 +171,7 @@ extern "C" {
 #define UI_LIST_CLIP_BOT       510
 #define UI_LIST_ROW_H          58
 #define UI_LIST_SEL_W          320
+#define UI_LIST_DRAG_SLOP      12   /* px before a list press becomes a scroll  */
 #define UI_LIST_SEL_H          52
 #define UI_LIST_SEL_RADIUS     26
 #define UI_OPA_ROW_NEAR        191  /* ~75% at 0 px from centre                 */

@@ -26,6 +26,8 @@
 #include "esp_err.h"
 #include "esp_timer.h"
 #include "esp_check.h"
+#include "nvs_flash.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "WAVESHARESYNTH";
 
@@ -62,6 +64,31 @@ static int16_t preset_wavetables[3][256];
 static uint16_t desired_preset = 0;
 static uint16_t desired_cutoff = 350;
 static uint8_t desired_resonance = 140;
+static synth_envelope_t desired_envelope = preset_envelope(0);
+
+/* Master echo: a 1 s ring buffer; the UI sets time/feedback/mix (Q8). */
+#define DELAY_MAX_SAMPLES   SAMPLE_RATE
+static int16_t *delay_line = nullptr;
+static uint32_t delay_pos = 0;
+static volatile uint32_t desired_delay_samples = 0;
+static volatile uint16_t desired_delay_feedback = 0;
+static volatile uint16_t desired_delay_mix = 0;
+
+static inline int16_t clamp16(int32_t v)
+{
+    return (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
+}
+
+static inline int16_t apply_delay(int16_t dry)
+{
+    if(!delay_line) return dry;
+    const uint32_t length = desired_delay_samples;
+    /* Off still advances and writes silence so re-enabling never replays stale audio. */
+    const int32_t wet = length ? delay_line[(delay_pos + DELAY_MAX_SAMPLES - length) % DELAY_MAX_SAMPLES] : 0;
+    delay_line[delay_pos] = length ? clamp16(dry + ((wet * desired_delay_feedback) >> 8)) : 0;
+    delay_pos = (delay_pos + 1) % DELAY_MAX_SAMPLES;
+    return clamp16(dry + ((wet * desired_delay_mix) >> 8));
+}
 static Open303Voice *acid_voice = nullptr;
 static uint32_t acid_benchmark_worst_us = 0;
 static uint32_t acid_benchmark_average_us = 0;
@@ -72,7 +99,11 @@ typedef struct {
     uint16_t preset;
     uint16_t cutoff_hz;
     uint8_t resonance;
+    synth_envelope_t envelope;
 } synth_command_t;
+
+/* Presets rendered by the dedicated Open303 voice: 3 = Acid, 5 = darker Acid bass. */
+static bool is_acid_preset(uint16_t preset) { return preset == 3 || preset == 5; }
 
 static void apply_synth_preset(uint16_t preset, uint16_t voice)
 {
@@ -81,7 +112,6 @@ static void apply_synth_preset(uint16_t preset, uint16_t voice)
     synth.setTremolo(voice, 0, 0);
     synth.setCustomDSP(nullptr);
     synth.setMasterBitcrush(16);
-    synth.setEnv(voice, 5, 60, 200, 120);
     for(uint8_t i = 0; i < 4; ++i) synth.setCustomParam(voice, i, 0);
     switch(preset) {
     case 0: synth.setCustomWave(voice, ESP32Patches::AA_Saw); break;
@@ -92,10 +122,10 @@ static void apply_synth_preset(uint16_t preset, uint16_t voice)
         break;
     case 2:
         synth.setWave(voice, WAVE_TRIANGLE);
-        synth.setEnv(voice, 15, 250, 140, 200);
         break;
     case 3:
-        /* Dedicated Open303 renders this preset; ESP32Synth voices stay off. */
+    case 5:
+        /* Dedicated Open303 renders these presets; ESP32Synth voices stay off. */
         break;
     case 4: synth.setWave(voice, WAVE_SINE); break;
     case 6: case 7:
@@ -104,7 +134,6 @@ static void apply_synth_preset(uint16_t preset, uint16_t voice)
         synth.setCustomParam(voice, 1, preset == 6 ? 0 : 50);
         synth.setCustomParam(voice, 2, preset == 6 ? 25 : 90);
         synth.setCustomParam(voice, 3, preset == 6 ? 16000 : 6000);
-        synth.setEnv(voice, 3, preset == 6 ? 500 : 1000, 0, 200);
         break;
     case 8: case 9:
         synth.setCustomWave(voice, ESP32Patches::HammondB3);
@@ -116,11 +145,9 @@ static void apply_synth_preset(uint16_t preset, uint16_t voice)
         break;
     case 12: case 13: case 14:
         synth.setWave(voice, preset == 13 ? WAVE_SINE : (preset == 12 ? WAVE_TRIANGLE : WAVE_PULSE));
-        synth.setEnv(voice, 2, preset == 14 ? 130 : (preset == 12 ? 450 : 750), 0, 120);
         break;
     case 18: case 19: case 20:
         synth.setWave(voice, preset == 20 ? WAVE_SINE : WAVE_NOISE);
-        synth.setEnv(voice, 1, preset == 18 ? 35 : (preset == 19 ? 140 : 220), 0, 30);
         break;
     case 24: case 25: case 26:
         synth.setWavetable(voice, preset_wavetables[preset - 24], 256, BITS_16);
@@ -146,20 +173,32 @@ static void synth_output_callback(int16_t *samples, int num_samples)
     static bool acid_gate = false;
     static uint32_t acid_trigger = 0;
     static int acid_midi = -1;
+    static synth_envelope_t applied_envelope{};
     synth_command_t command;
     while (xQueueReceive(synth_command_queue, &command, 0) == pdTRUE) {
-        if(command.preset != applied_preset) {
+        const bool preset_changed = command.preset != applied_preset;
+        if(preset_changed) {
             for(uint16_t i = 0; i < SYNTH_UI_MAX_CONTACTS; ++i) {
                 apply_synth_preset(command.preset, i);
                 gate[i] = false;
             }
             applied_preset = command.preset;
             acid_voice->reset();
+            acid_voice->set_dark(applied_preset == 5);
             acid_gate = false;
             acid_midi = -1;
             ESP_LOGI(TAG, "Preset=%u on %u voices, core %d", applied_preset, SYNTH_UI_MAX_CONTACTS, xPortGetCoreID());
         }
-        if(applied_preset == 3) {
+        if(preset_changed || !synth_envelope_equal(command.envelope, applied_envelope)) {
+            applied_envelope = command.envelope;
+            const synth_envelope_t &env = applied_envelope;
+            if(is_acid_preset(applied_preset)) {
+                acid_voice->set_envelope(env.decay, env.filter_decay, env.release);
+            } else {
+                for(uint16_t i = 0; i < SYNTH_UI_MAX_CONTACTS; ++i) synth.setEnv(i, env.attack, env.decay, env.sustain, env.release);
+            }
+        }
+        if(is_acid_preset(applied_preset)) {
             acid_voice->set_controls(command.cutoff_hz, command.resonance);
             const synth_ui_note_t *priority = nullptr;
             for(const auto &note : command.notes) {
@@ -208,7 +247,7 @@ static void synth_output_callback(int16_t *samples, int num_samples)
         return;
     }
 
-    if(applied_preset == 3) {
+    if(is_acid_preset(applied_preset)) {
         const int64_t start = esp_timer_get_time();
         acid_voice->render(samples, num_samples);
         const uint32_t used = (uint32_t)(esp_timer_get_time() - start);
@@ -224,7 +263,7 @@ static void synth_output_callback(int16_t *samples, int num_samples)
         }
     }
     for (int i = 0; i < num_samples; i++) {
-        const int16_t sample = samples[i];
+        const int16_t sample = apply_delay(samples[i]);
         synth_stereo_buffer[i * 2] = sample;
         synth_stereo_buffer[i * 2 + 1] = sample;
     }
@@ -242,6 +281,7 @@ static void queue_synth_command(uint32_t frequency_centi_hz, uint16_t volume,
     command.preset = desired_preset;
     command.cutoff_hz = desired_cutoff;
     command.resonance = desired_resonance;
+    command.envelope = desired_envelope;
     command.notes[0] = {frequency_centi_hz, volume, pressed, 0, false, false, false};
     xQueueOverwrite(synth_command_queue, &command);
 }
@@ -380,15 +420,14 @@ esp_err_t init_display(void)
     };
     ESP_RETURN_ON_ERROR(gpio_config(&backlight_cfg), TAG,
                         "Failed to configure display backlight");
-    ESP_RETURN_ON_ERROR(gpio_set_level(DISPLAY_BACKLIGHT_PIN, 1), TAG,
-                        "Failed to enable display backlight GPIO");
+    /* Backlight stays dark until the first UI frame is drawn (no white flash). */
+    ESP_RETURN_ON_ERROR(gpio_set_level(DISPLAY_BACKLIGHT_PIN, 0), TAG,
+                        "Failed to set display backlight GPIO");
     ESP_RETURN_ON_ERROR(gpio_set_level(DISPLAY_BACKLIGHT_ENABLE_PIN, 1), TAG,
                         "Failed to enable display backlight boost");
 
     ESP_RETURN_ON_ERROR(bsp_display_new(NULL, &display_panel, &display_io), TAG,
                         "Failed to initialize 4C MIPI-DSI display");
-    ESP_RETURN_ON_ERROR(bsp_display_backlight_on(), TAG,
-                        "Failed to enable display backlight");
 
     esp_lv_adapter_config_t lvgl_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
     /* SynthTask is pinned to P4 core 1; keep UI work on core 0. */
@@ -400,6 +439,9 @@ esp_err_t init_display(void)
         ESP_LV_ADAPTER_DISPLAY_MIPI_DEFAULT_CONFIG(
             display_panel, display_io, 720, 720, ESP_LV_ADAPTER_ROTATE_0);
     display_cfg.profile.buffer_height = 60;
+    /* Partial triple-buffering left stale/blank framebuffers on screen; draw
+     * straight into the single scanned-out buffer instead. */
+    display_cfg.tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE;
     lvgl_display = esp_lv_adapter_register_display(&display_cfg);
     ESP_RETURN_ON_FALSE(lvgl_display != NULL, ESP_FAIL, TAG,
                         "Failed to register LVGL display");
@@ -467,8 +509,23 @@ static void ui_set_notes(const synth_ui_note_t *notes)
     command.preset = desired_preset;
     command.cutoff_hz = desired_cutoff;
     command.resonance = desired_resonance;
+    command.envelope = desired_envelope;
     memcpy(command.notes, notes, sizeof(command.notes));
     xQueueOverwrite(synth_command_queue, &command);
+}
+
+static void ui_set_envelope(const synth_envelope_t *envelope)
+{
+    desired_envelope = *envelope;
+}
+
+static void ui_set_delay(uint16_t time_ms, uint8_t feedback_pct, uint8_t mix_pct)
+{
+    uint32_t samples = (uint32_t)time_ms * SAMPLE_RATE / 1000;
+    if(samples >= DELAY_MAX_SAMPLES) samples = DELAY_MAX_SAMPLES - 1;
+    desired_delay_feedback = (uint16_t)(feedback_pct * 256 / 100);
+    desired_delay_mix = (uint16_t)(mix_pct * 256 / 100);
+    desired_delay_samples = samples;
 }
 
 static void ui_set_acid_filter(uint16_t cutoff_hz, uint8_t resonance)
@@ -485,6 +542,8 @@ static void init_ui(void)
         .select_preset = ui_select_preset,
         .set_notes = ui_set_notes,
         .set_acid_filter = ui_set_acid_filter,
+        .set_envelope = ui_set_envelope,
+        .set_delay = ui_set_delay,
     };
     synth_ui_init(lv_screen_active(), &audio);
 }
@@ -493,6 +552,18 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=== Waveshare Synth Boot ===");
     ESP_LOGI(TAG, "Target: ESP32-P4-WIFI6-Touch-LCD-XC");
+
+    /* NVS holds the user's wedge instrument assignments. */
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    if (nvs_err != ESP_OK) ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(nvs_err));
+
+    delay_line = (int16_t *)heap_caps_calloc(DELAY_MAX_SAMPLES, sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!delay_line) delay_line = (int16_t *)heap_caps_calloc(DELAY_MAX_SAMPLES, sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (!delay_line) ESP_LOGE(TAG, "Delay buffer allocation failed; echo disabled");
 
     /* Initialize buses before the codec and audio path. */
     if (init_i2c() != ESP_OK) {
@@ -513,11 +584,6 @@ extern "C" void app_main(void)
     }
 
     init_ui();
-    if (esp_lv_adapter_start() != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start LVGL adapter");
-        return;
-    }
-    ESP_LOGI(TAG, "LVGL UI initialized; touch events routed to widgets");
 
     if (init_i2s() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize I2S");
@@ -532,6 +598,18 @@ extern "C" void app_main(void)
     if (init_synth() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize synth");
         return;
+    }
+
+    /* Start rendering only after audio bring-up: the first frame was being
+     * lost (white screen until the next redraw) when LVGL started earlier. */
+    if (esp_lv_adapter_start() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start LVGL adapter");
+        return;
+    }
+    ESP_LOGI(TAG, "LVGL UI initialized; touch events routed to widgets");
+    vTaskDelay(pdMS_TO_TICKS(150));  /* let LVGL flush its first full frame */
+    if (bsp_display_backlight_on() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable display backlight");
     }
 
     ESP_LOGI(TAG, "=== Boot complete ===");

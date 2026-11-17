@@ -38,12 +38,27 @@ void Open303Voice::reset()
 
 void Open303Voice::set_controls(uint16_t hz, uint8_t res)
 {
-    target_cutoff = std::clamp(float(hz), 80.0f, 6000.0f);
+    target_cutoff = std::clamp(float(hz) * cutoff_scale, 60.0f, 6000.0f);
     /* Musical control taper: expose the resonant region without losing zero. */
     target_resonance = 120.0f * std::sqrt(res / 255.0f);
 }
 
 void Open303Voice::set_waveform(bool square) { engine->setWaveform(square ? 1.0f : 0.0f); }
+
+void Open303Voice::set_envelope(float note_decay_ms, float filter_decay_ms, float release_ms)
+{
+    engine->setAmpDecay(std::max(note_decay_ms, 16.0f));
+    engine->setDecay(std::max(filter_decay_ms, 30.0f));
+    engine->setAmpRelease(std::max(release_ms, 0.5f));
+}
+
+void Open303Voice::set_dark(bool dark)
+{
+    /* Darker bass voicing: lower cutoff, shallower filter sweep, harder accents. */
+    cutoff_scale = dark ? 0.55f : 1.0f;
+    engine->setEnvMod(dark ? 50.0f : 80.0f);
+    engine->setAccent(dark ? 100.0f : 90.0f);
+}
 
 void Open303Voice::set_sustain(bool enabled)
 {

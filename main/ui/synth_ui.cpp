@@ -1,13 +1,12 @@
 #include "synth_ui.h"
 #include "ui_theme.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "nvs.h"
 
 namespace {
 
@@ -16,28 +15,103 @@ struct Program {
     const char *ring_name;
     const char *x_label;
     const char *y_label;
-    bool lanes;
+    uint16_t preset;
 };
 
 static const Program kPrograms[UI_PROG_COUNT] = {
-    {"Filter sweep", "FILT", "Cutoff", "Resonance", false},
-    {"Band sweep", "BAND", "Center", "Width", false},
-    {"Acid", "Acid", "Cutoff", "Resonance", false},
-    {"Touch scale", "SCALE", "Note", "Filter", true},
-    {"FM bell", "FM", "Ratio", "Mod index", false},
-    {"Arp", "Arp", "Rate", "Span", false},
-    {"Vibrato", "VIB", "Rate", "Depth", false},
-    {"Tremolo gate", "TREM", "Rate", "Depth", false},
-    {"PWM lead", "PWM", "Note", "Pulse width", true},
-    {"Bitcrush", "CRUSH", "Bits", "Cutoff", false},
-    {"Pluck", "Pluck", "Note", "Damping", true},
-    {"Organ", "Organ", "Note", "Reverb", true},
+    {"Filter sweep", "FILT", "Cutoff", "Resonance", 0},
+    {"Band sweep", "BAND", "Center", "Width", 2},
+    {"Acid", "Acid", "Cutoff", "Resonance", 3},
+    {"Touch scale", "SCALE", "Note", "Filter", 6},
+    {"FM bell", "FM", "Ratio", "Mod index", 7},
+    {"Arp", "Arp", "Rate", "Span", 1},
+    {"Vibrato", "VIB", "Rate", "Depth", 36},
+    {"Tremolo gate", "TREM", "Rate", "Depth", 37},
+    {"PWM lead", "PWM", "Note", "Pulse width", 1},
+    {"Bitcrush", "CRUSH", "Bits", "Cutoff", 26},
+    {"Pluck", "Pluck", "Note", "Damping", 12},
+    {"Organ", "Organ", "Note", "Reverb", 8},
 };
+
+/* Instrument assigned to each ring wedge; user-editable and persisted in NVS. */
+struct Slot {
+    char name[24];
+    char ring[24];
+    uint8_t layout;   /* index into kPrograms for axis labels */
+    uint16_t preset;
+};
+
+static Slot g_slots[UI_PROG_COUNT];
+static constexpr const char *kNvsNamespace = "synth_ui";
+static constexpr const char *kNvsSlotsKey = "wedges_v1";
+
+/* Notes the pad offers for each wedge: X snaps to `scale` notes from root in
+ * `low_octave` upward for `octaves`; SCALE_FREE glides continuously. */
+struct NoteSettings {
+    uint8_t root;        /* 0 = C .. 11 = B */
+    uint8_t scale;       /* index into kScales */
+    uint8_t low_octave;  /* MIDI octave of the lowest root (C3 = 3) */
+    uint8_t octaves;
+};
+
+struct Scale {
+    const char *name;
+    uint16_t mask;       /* bit n set = n semitones above root allowed */
+};
+
+static const Scale kScales[] = {
+    {"Free", 0},
+    {"Chromatic", 0xFFF},
+    {"Major", 0xAB5},
+    {"Minor", 0x5AD},
+    {"Dorian", 0x6AD},
+    {"Pentatonic", 0x295},
+    {"Minor pent", 0x4A9},
+    {"Blues", 0x4E9},
+};
+static constexpr uint8_t kScaleCount = sizeof(kScales) / sizeof(kScales[0]);
+static constexpr uint8_t SCALE_FREE = 0;
+static const char *const kNoteNames[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+static constexpr uint8_t kMinOctave = 1, kMaxOctave = 6, kMaxOctaves = 4;
+
+static NoteSettings g_notes[UI_PROG_COUNT];
+static constexpr const char *kNvsNotesKey = "notes_v1";
+
+/* Per-wedge amplitude envelope; defaults to the instrument's factory envelope. */
+static synth_envelope_t g_env[UI_PROG_COUNT];
+static constexpr const char *kNvsEnvKey = "env_v1";
+static const uint16_t kTimeSteps[] = {0, 1, 2, 5, 10, 20, 35, 50, 75, 100, 150, 200, 300, 450,
+                                      600, 800, 1000, 1250, 1500, 2000, 3000};
+static constexpr int kTimeStepCount = sizeof(kTimeSteps) / sizeof(kTimeSteps[0]);
+
+/* Global arp tempo and tempo-synced echo, edited on the FX page. */
+static uint16_t g_bpm = 120;
+static constexpr uint16_t kMinBpm = 60, kMaxBpm = 200, kBpmStep = 5;
+static constexpr const char *kNvsBpmKey = "bpm";
+
+struct DelayDivision {
+    const char *name;
+    uint8_t sixteenths;  /* echo time in sixteenth notes; 0 = off */
+};
+static const DelayDivision kDelayDivisions[] = {{"Off", 0}, {"1/16", 1}, {"1/8", 2}, {"1/8 dot", 3}, {"1/4", 4}};
+static constexpr uint8_t kDelayDivisionCount = sizeof(kDelayDivisions) / sizeof(kDelayDivisions[0]);
+
+struct FxSettings {
+    uint8_t division;
+    uint8_t feedback_pct;
+    uint8_t mix_pct;
+};
+static FxSettings g_fx = {0, 40, 30};
+static constexpr uint8_t kMaxFeedbackPct = 90;
+static constexpr const char *kNvsFxKey = "fx_v1";
 
 struct MenuItem {
     const char *name;
-    uint8_t program;
+    uint8_t program;  /* kPrograms layout for axis labels */
+    uint16_t preset;
 };
+
+static constexpr uint16_t kNoPreset = 0xFFFF;
 
 struct MenuGroup {
     const char *name;
@@ -46,20 +120,34 @@ struct MenuGroup {
 };
 
 static const MenuGroup kMenu[] = {
-    {"Synth", {{"Saw lead", 0}, {"Pulse lead", 8}, {"Filter synth", 0}, {"Acid bass", 2}, {"Sub bass", 2}}, 5},
-    {"Keys", {{"FM e-piano", 4}, {"FM bell", 4}, {"Organ B3", 11}, {"Organ + Leslie", 11}}, 4},
-    {"Plucked", {{"Nylon guitar", 10}, {"Harp", 10}, {"Pizzicato", 10}}, 3},
-    {"Drums", {{"Noise hat", 9}, {"Noise snare", 9}, {"Sine kick", 9}}, 3},
-    {"Wavetables", {{"Glass", 4}, {"Formant", 0}, {"Digital", 9}}, 3},
-    {"Samples", {{"Placeholders", 0}}, 1},
+    {"Synth", {{"Saw lead", 0, 0}, {"Pulse lead", 8, 1}, {"Filter synth", 0, 2}, {"Acid bass", 2, 5}, {"Sub bass", 2, 4}}, 5},
+    {"Keys", {{"FM e-piano", 4, 6}, {"FM bell", 4, 7}, {"Organ B3", 11, 8}, {"Organ + Leslie", 11, 9}}, 4},
+    {"Plucked", {{"Nylon guitar", 10, 12}, {"Harp", 10, 13}, {"Pizzicato", 10, 14}}, 3},
+    {"Drums", {{"Noise hat", 9, 18}, {"Noise snare", 9, 19}, {"Sine kick", 9, 20}}, 3},
+    {"Wavetables", {{"Glass", 4, 24}, {"Formant", 0, 25}, {"Digital", 9, 26}}, 3},
+    {"Samples", {{"Placeholders", 0, kNoPreset}}, 1},
 };
+
+/* Picker group 0 is "Originals": the factory wedge instruments from kPrograms. */
+static constexpr uint8_t kGroupCount = 1 + sizeof(kMenu) / sizeof(kMenu[0]);
+static constexpr uint8_t kPickerRows = 6;
+
+static const char *group_name(uint8_t g) { return g == 0 ? "Originals" : kMenu[g - 1].name; }
+static uint8_t group_size(uint8_t g) { return g == 0 ? UI_PROG_COUNT : kMenu[g - 1].count; }
+static MenuItem group_item(uint8_t g, uint8_t i)
+{
+    if(g == 0) return {kPrograms[i].name, i, kPrograms[i].preset};
+    return kMenu[g - 1].items[i];
+}
 
 struct UiState {
     struct Contact {
         lv_indev_t *device = nullptr;
         bool down = false;
         bool ring = false;
+        bool long_fired = false;
         uint32_t stationary_since = 0;
+        uint32_t pressed_at = 0;
         lv_point_t anchor{};
         lv_point_t point{};
         synth_ui_note_t note{};
@@ -71,8 +159,6 @@ struct UiState {
     lv_obj_t *picker = nullptr;
     lv_obj_t *title = nullptr;
     lv_obj_t *subtitle = nullptr;
-    lv_obj_t *x_label = nullptr;
-    lv_obj_t *y_label = nullptr;
     lv_obj_t *readout = nullptr;
     lv_obj_t *hold_button = nullptr;
     lv_obj_t *hold_label = nullptr;
@@ -92,14 +178,27 @@ struct UiState {
     lv_obj_t *picker_ticks[UI_TICK_COUNT]{};
     lv_obj_t *picker_band = nullptr;
     lv_obj_t *picker_scroll = nullptr;
-    uint8_t program = 0;
+    uint8_t program = 0;        /* selected wedge */
+    uint8_t picker_slot = 0;    /* wedge the open picker will reassign */
+    uint8_t notes_slot = 0;     /* wedge the note editor is editing */
+    uint8_t last_tap_wedge = 0xFF;
+    uint32_t last_tap_at = 0;
+    lv_obj_t *notes_panel = nullptr;
+    lv_obj_t *notes_title = nullptr;
+    lv_obj_t *notes_values[5]{};
+    lv_obj_t *notes_rows[5][2]{};   /* < and > buttons per row */
+    lv_obj_t *notes_tabs[3]{};
+    uint8_t notes_page = 0;         /* 0 = Notes, 1 = Sound, 2 = FX */
     uint16_t active_preset = 0;
     bool acid_sweep = false;
     uint16_t acid_cutoff = 350;
     uint8_t acid_resonance = 140;
     uint8_t menu_group = 0;
     uint8_t menu_item = 0;
-    const char *instrument_name = nullptr;
+    uint8_t list_first = 0;     /* first menu entry shown in the 6-row window */
+    bool list_touch = false;    /* current picker press started on the list */
+    bool list_drag = false;     /* ...and has moved far enough to scroll */
+    uint8_t drag_first = 0;
     bool picker_in_group = false;
     bool hold = false;
     bool touching = false;
@@ -189,19 +288,134 @@ static void show(lv_obj_t *obj)
     if(obj) lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
 }
 
+static void load_slots(void)
+{
+    for(uint8_t i = 0; i < UI_PROG_COUNT; ++i) {
+        Slot &s = g_slots[i];
+        snprintf(s.name, sizeof(s.name), "%s", kPrograms[i].name);
+        snprintf(s.ring, sizeof(s.ring), "%s", kPrograms[i].ring_name);
+        s.layout = i;
+        s.preset = kPrograms[i].preset;
+    }
+    nvs_handle_t nvs;
+    if(nvs_open(kNvsNamespace, NVS_READONLY, &nvs) != ESP_OK) return;
+    Slot stored[UI_PROG_COUNT];
+    size_t size = sizeof(stored);
+    if(nvs_get_blob(nvs, kNvsSlotsKey, stored, &size) == ESP_OK && size == sizeof(stored)) {
+        for(auto &s : stored) {
+            s.name[sizeof(s.name) - 1] = s.ring[sizeof(s.ring) - 1] = '\0';
+            if(s.layout >= UI_PROG_COUNT) s.layout = 0;
+        }
+        memcpy(g_slots, stored, sizeof(g_slots));
+        ESP_LOGI("SYNTH_UI", "Loaded wedge assignments from NVS");
+    }
+    nvs_close(nvs);
+}
+
+/* Presets played by the Open303 voice: 3 = Acid, 5 = darker Acid bass. */
+static bool is_acid_preset(uint16_t preset) { return preset == 3 || preset == 5; }
+
+static NoteSettings default_notes(uint16_t preset)
+{
+    /* The 303 only sounds right in the bass: two chromatic octaves from C1.
+     * Everything else glides over C3-C6. */
+    return is_acid_preset(preset) ? NoteSettings{0, 1, 1, 2} : NoteSettings{0, SCALE_FREE, 3, 3};
+}
+
+static void load_notes(void)
+{
+    for(uint8_t i = 0; i < UI_PROG_COUNT; ++i) g_notes[i] = default_notes(g_slots[i].preset);
+    nvs_handle_t nvs;
+    if(nvs_open(kNvsNamespace, NVS_READONLY, &nvs) != ESP_OK) return;
+    NoteSettings stored[UI_PROG_COUNT];
+    size_t size = sizeof(stored);
+    uint16_t bpm = 0;
+    if(nvs_get_u16(nvs, kNvsBpmKey, &bpm) == ESP_OK && bpm >= kMinBpm && bpm <= kMaxBpm) g_bpm = bpm;
+    FxSettings fx;
+    size_t fx_size = sizeof(fx);
+    if(nvs_get_blob(nvs, kNvsFxKey, &fx, &fx_size) == ESP_OK && fx_size == sizeof(fx) &&
+       fx.division < kDelayDivisionCount && fx.feedback_pct <= kMaxFeedbackPct && fx.mix_pct <= 100) g_fx = fx;
+    if(nvs_get_blob(nvs, kNvsNotesKey, stored, &size) == ESP_OK && size == sizeof(stored)) {
+        for(uint8_t i = 0; i < UI_PROG_COUNT; ++i) {
+            const NoteSettings &n = stored[i];
+            if(n.root < 12 && n.scale < kScaleCount && n.low_octave >= kMinOctave &&
+               n.low_octave <= kMaxOctave && n.octaves >= 1 && n.octaves <= kMaxOctaves) g_notes[i] = n;
+        }
+    }
+    nvs_close(nvs);
+}
+
+static void send_delay(void)
+{
+    const uint16_t time_ms = (uint16_t)(15000u * kDelayDivisions[g_fx.division].sixteenths / g_bpm);
+    if(g_ui.audio.set_delay) g_ui.audio.set_delay(time_ms, g_fx.feedback_pct, g_fx.mix_pct);
+}
+
+static void load_env(void)
+{
+    for(uint8_t i = 0; i < UI_PROG_COUNT; ++i) g_env[i] = preset_envelope(g_slots[i].preset);
+    nvs_handle_t nvs;
+    if(nvs_open(kNvsNamespace, NVS_READONLY, &nvs) != ESP_OK) return;
+    synth_envelope_t stored[UI_PROG_COUNT];
+    size_t size = sizeof(stored);
+    if(nvs_get_blob(nvs, kNvsEnvKey, stored, &size) == ESP_OK && size == sizeof(stored)) {
+        memcpy(g_env, stored, sizeof(g_env));
+    }
+    nvs_close(nvs);
+}
+
+static void save_env(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &nvs);
+    if(err == ESP_OK) {
+        err = nvs_set_blob(nvs, kNvsEnvKey, g_env, sizeof(g_env));
+        if(err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if(err != ESP_OK) ESP_LOGE("SYNTH_UI", "Saving envelopes failed: %s", esp_err_to_name(err));
+}
+
+static void save_notes(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &nvs);
+    if(err == ESP_OK) {
+        err = nvs_set_blob(nvs, kNvsNotesKey, g_notes, sizeof(g_notes));
+        if(err == ESP_OK) err = nvs_set_u16(nvs, kNvsBpmKey, g_bpm);
+        if(err == ESP_OK) err = nvs_set_blob(nvs, kNvsFxKey, &g_fx, sizeof(g_fx));
+        if(err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if(err != ESP_OK) ESP_LOGE("SYNTH_UI", "Saving note settings failed: %s", esp_err_to_name(err));
+}
+
+static void save_slots(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &nvs);
+    if(err == ESP_OK) {
+        err = nvs_set_blob(nvs, kNvsSlotsKey, g_slots, sizeof(g_slots));
+        if(err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if(err != ESP_OK) ESP_LOGE("SYNTH_UI", "Saving wedge assignments failed: %s", esp_err_to_name(err));
+}
+
 static void update_pad_text(void)
 {
-    const Program &p = kPrograms[g_ui.program];
-    lv_label_set_text(g_ui.title, g_ui.instrument_name ? g_ui.instrument_name : p.name);
-    lv_label_set_text_fmt(g_ui.subtitle, "P%02u · CPU --%%", (unsigned)(g_ui.program + 1));
-    lv_label_set_text_fmt(g_ui.x_label, "%s →", p.x_label);
-    lv_label_set_text_fmt(g_ui.y_label, "%s ↑", p.y_label);
+    const Slot &slot = g_slots[g_ui.program];
+    lv_label_set_text(g_ui.title, slot.name);
+    const NoteSettings &n = g_notes[g_ui.program];
+    lv_label_set_text_fmt(g_ui.subtitle, "P%02u - %s %s", (unsigned)(g_ui.program + 1),
+                          kNoteNames[n.root], kScales[n.scale].name);
     lv_label_set_text(g_ui.readout, "Touch to play");
     for(uint8_t i = 0; i < UI_PROG_COUNT; ++i) {
         const bool selected = i == g_ui.program;
         lv_obj_set_style_arc_color(g_ui.program_arcs[i], col(selected ? UI_COL_ACCENT : UI_COL_FG), LV_PART_INDICATOR);
         lv_obj_set_style_arc_opa(g_ui.program_arcs[i], selected ? LV_OPA_COVER : UI_OPA_SEG_IDLE, LV_PART_INDICATOR);
-        lv_obj_set_style_text_color(g_ui.program_labels[i], col(selected ? UI_COL_ACCENT : UI_COL_FG), 0);
+        lv_obj_set_style_text_color(g_ui.program_labels[i], col(selected ? UI_COL_BG : UI_COL_FG), 0);
+        lv_obj_set_style_text_opa(g_ui.program_labels[i], selected ? LV_OPA_COVER : UI_OPA_TEXT_LABEL, 0);
     }
 }
 
@@ -255,19 +469,37 @@ static void add_trail(int x, int y)
     lv_anim_start(&anim);
 }
 
+static uint32_t midi_centi_hz(float midi)
+{
+    return (uint32_t)(44000.0f * powf(2.0f, (midi - 69.0f) / 12.0f));
+}
+
+static uint32_t pad_frequency(int x)
+{
+    const NoteSettings &n = g_notes[g_ui.program];
+    const float t = (float)(x - UI_MAP_MIN) / (UI_MAP_MAX - UI_MAP_MIN);
+    const int low = 12 * (n.low_octave + 1) + n.root;
+    const int span = 12 * n.octaves;
+    if(n.scale == SCALE_FREE) return midi_centi_hz(low + t * span);
+    /* Equal-width zones per available note, top root included. */
+    uint8_t notes[12 * kMaxOctaves + 1];
+    int count = 0;
+    for(int step = 0; step <= span; ++step) {
+        if(kScales[n.scale].mask & (1u << (step % 12))) notes[count++] = (uint8_t)(low + step);
+    }
+    int index = (int)(t * count);
+    if(index >= count) index = count - 1;
+    return midi_centi_hz(notes[index]);
+}
+
 static synth_ui_note_t pad_note(int x, int y, uint32_t trigger)
 {
     x = x < UI_MAP_MIN ? UI_MAP_MIN : (x > UI_MAP_MAX ? UI_MAP_MAX : x);
     y = y < UI_MAP_MIN ? UI_MAP_MIN : (y > UI_MAP_MAX ? UI_MAP_MAX : y);
-    uint32_t freq = 13000u + ((uint32_t)(x - UI_MAP_MIN) * 87000u) /
-                    (UI_MAP_MAX - UI_MAP_MIN);
-    if(g_ui.active_preset == 3) {
-        const int midi = 24 + ((x - UI_MAP_MIN) * 24 + (UI_MAP_MAX - UI_MAP_MIN) / 2) / (UI_MAP_MAX - UI_MAP_MIN);
-        freq = (uint32_t)(44000.0f * powf(2.0f, (midi - 69) / 12.0f));
-    }
+    const uint32_t freq = pad_frequency(x);
     uint16_t volume = (uint16_t)(((uint32_t)(UI_MAP_MAX - y) * 255u) /
                                  (UI_MAP_MAX - UI_MAP_MIN));
-    if(g_ui.active_preset == 3) volume = 200;
+    if(is_acid_preset(g_ui.active_preset)) volume = 200;
     return {freq, volume, true, trigger, false, false, true};
 }
 
@@ -278,7 +510,7 @@ static void update_acid_gesture(void)
     for(const auto &contact : g_ui.contacts) if(contact.down && !contact.ring) {
         ++count; x += contact.point.x; y += contact.point.y;
     }
-    const bool sweep = g_ui.active_preset == 3 && count >= 3;
+    const bool sweep = is_acid_preset(g_ui.active_preset) && count >= 3;
     if(sweep != g_ui.acid_sweep) ESP_LOGI("SYNTH_UI", "Acid sweep=%d contacts=%u", sweep, count);
     g_ui.acid_sweep = sweep;
     if(!sweep) return;
@@ -319,7 +551,9 @@ static void publish_contacts(void)
             }
         }
         const uint32_t elapsed = lv_tick_elaps(g_ui.arp_started);
-        const uint32_t step = elapsed / 125; /* 120 BPM, sixteenth notes */
+        const uint32_t step_ms = 15000u / g_bpm; /* sixteenth notes */
+        const uint32_t gate_ms = step_ms * 3 / 4;
+        const uint32_t step = elapsed / step_ms;
         if(step != g_ui.arp_step) {
             g_ui.arp_step = step;
             ++g_ui.trigger;
@@ -332,19 +566,19 @@ static void publish_contacts(void)
         }
         notes[0].trigger = g_ui.trigger;
         notes[0].sustain = false;
-        if(g_ui.active_preset == 3) {
+        if(is_acid_preset(g_ui.active_preset)) {
             notes[0].accent = step % 4 == 0;
             notes[0].slide = step % 4 == 2 || step % 4 == 3;
             const unsigned next = (step + 1) % 4;
-            notes[0].pressed = next == 2 || next == 3 || elapsed % 125 < 95;
+            notes[0].pressed = next == 2 || next == 3 || elapsed % step_ms < gate_ms;
         } else {
-            notes[0].pressed = elapsed % 125 < 95;
+            notes[0].pressed = elapsed % step_ms < gate_ms;
         }
-        lv_label_set_text_fmt(g_ui.readout, "ARP · %u held · 120 BPM", count);
+        lv_label_set_text_fmt(g_ui.readout, "ARP - %u held - %u BPM", count, g_bpm);
     } else {
         lv_label_set_text_fmt(g_ui.readout, "%u note%s", count, count == 1 ? "" : "s");
     }
-    if(g_ui.acid_sweep) lv_label_set_text_fmt(g_ui.readout, "ACID%s · %u Hz · res %u%%",
+    if(g_ui.acid_sweep) lv_label_set_text_fmt(g_ui.readout, "ACID%s - %u Hz - res %u%%",
         g_ui.arp ? " ARP" : "", g_ui.acid_cutoff, g_ui.acid_resonance * 100 / 255);
     if(g_ui.audio.set_notes) g_ui.audio.set_notes(notes);
 }
@@ -357,7 +591,6 @@ static void arp_timer(lv_timer_t *)
 static void arp_event(lv_event_t *event)
 {
     if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
-    ESP_LOGI("SYNTH_UI", "Arp button clicked, before toggle: enabled=%d hidden=%d", g_ui.arp_enabled, lv_obj_has_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN));
     g_ui.arp_enabled = !g_ui.arp_enabled;
     g_ui.arp = false;
     lv_label_set_text(g_ui.arp_label, g_ui.arp_enabled ? "Arp on" : "Arp off");
@@ -365,10 +598,7 @@ static void arp_event(lv_event_t *event)
     lv_obj_set_style_bg_opa(g_ui.arp_button, g_ui.arp_enabled ? LV_OPA_COVER : 150, 0);
     lv_obj_clear_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(g_ui.arp_button);
-    vTaskDelay(5 / portTICK_PERIOD_MS);
-    lv_obj_invalidate(g_ui.screen);
-    lv_refr_now(nullptr);
-    ESP_LOGI("SYNTH_UI", "Arp enabled=%d hidden=%d", g_ui.arp_enabled, lv_obj_has_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN));
+    ESP_LOGI("SYNTH_UI", "Arp enabled=%d", g_ui.arp_enabled);
 }
 
 static void stop_contacts(void)
@@ -384,19 +614,246 @@ static void stop_contacts(void)
     hide(g_ui.cross_x); hide(g_ui.cross_y);
 }
 
-static void select_ring_program(const lv_point_t &point)
+static uint8_t wedge_at(const lv_point_t &point)
 {
     float angle = atan2f(point.x - UI_CX, UI_CY - point.y) * 180.0f / (float)M_PI;
     if(angle < 0) angle += 360.0f;
-    const uint8_t program = (int)((angle + UI_PROG_SEG_DEG / 2) / UI_PROG_SEG_DEG) % UI_PROG_COUNT;
-    if(g_ui.program == program && g_ui.instrument_name == kPrograms[program].name) return;
-    g_ui.program = program;
-    g_ui.instrument_name = kPrograms[program].name;
-    static const uint16_t presets[UI_PROG_COUNT] = {0, 2, 3, 6, 7, 1, 36, 37, 1, 26, 12, 8};
-    g_ui.active_preset = presets[program];
+    return (int)((angle + UI_PROG_SEG_DEG / 2) / UI_PROG_SEG_DEG) % UI_PROG_COUNT;
+}
+
+static void apply_slot(uint8_t wedge)
+{
+    g_ui.program = wedge;
+    g_ui.active_preset = g_slots[wedge].preset;
+    if(g_ui.audio.set_envelope) g_ui.audio.set_envelope(&g_env[wedge]);
     if(g_ui.audio.select_preset) g_ui.audio.select_preset(g_ui.active_preset);
-    ESP_LOGI("SYNTH_UI", "Ring program=%u", program + 1);
+    ESP_LOGI("SYNTH_UI", "Wedge %u: %s (preset %u)", wedge + 1, g_slots[wedge].name, g_ui.active_preset);
     update_pad_text();
+}
+
+static void select_ring_program(const lv_point_t &point)
+{
+    const uint8_t wedge = wedge_at(point);
+    if(g_ui.program != wedge) apply_slot(wedge);
+}
+
+static void update_picker_rows(void);
+
+enum EditField : uint8_t {
+    F_KEY, F_SCALE, F_LOW, F_OCTAVES, F_TEMPO,
+    F_ATTACK, F_DECAY, F_SUSTAIN, F_RELEASE, F_FILTER_DECAY,
+    F_DELAY, F_FEEDBACK, F_MIX, F_NONE
+};
+static constexpr uint8_t kEditRows = 5;
+static constexpr uintptr_t kEditDone = 0xFF, kEditTab = 0xF0;  /* kEditTab + page index */
+static constexpr uint8_t kEditPages = 3;
+
+/* Which field each row edits on the current page; the 303 has its own envelope. */
+static const EditField *edit_fields(void)
+{
+    static const EditField notes[kEditRows] = {F_KEY, F_SCALE, F_LOW, F_OCTAVES, F_NONE};
+    static const EditField fx[kEditRows] = {F_TEMPO, F_DELAY, F_FEEDBACK, F_MIX, F_NONE};
+    static const EditField sound[kEditRows] = {F_ATTACK, F_DECAY, F_SUSTAIN, F_RELEASE, F_NONE};
+    static const EditField acid[kEditRows] = {F_DECAY, F_FILTER_DECAY, F_RELEASE, F_NONE, F_NONE};
+    if(g_ui.notes_page == 0) return notes;
+    if(g_ui.notes_page == 2) return fx;
+    return is_acid_preset(g_slots[g_ui.notes_slot].preset) ? acid : sound;
+}
+
+static uint16_t step_time(uint16_t value, int dir)
+{
+    int i = 0;
+    while(i + 1 < kTimeStepCount && kTimeSteps[i + 1] <= value) ++i;
+    if(dir > 0) i = i + 1 < kTimeStepCount ? i + 1 : i;
+    else if(kTimeSteps[i] == value) i = i > 0 ? i - 1 : 0;
+    return kTimeSteps[i];
+}
+
+static void format_time(char *out, size_t size, const char *name, uint16_t ms)
+{
+    if(ms >= 1000) snprintf(out, size, "%s  %u.%02u s", name, ms / 1000, (ms % 1000) / 10);
+    else snprintf(out, size, "%s  %u ms", name, ms);
+}
+
+static void update_notes_editor(void)
+{
+    const NoteSettings &n = g_notes[g_ui.notes_slot];
+    const synth_envelope_t &e = g_env[g_ui.notes_slot];
+    lv_label_set_text(g_ui.notes_title, g_slots[g_ui.notes_slot].name);
+    for(uint8_t tab = 0; tab < kEditPages; ++tab) {
+        lv_obj_set_style_bg_color(g_ui.notes_tabs[tab], col(tab == g_ui.notes_page ? UI_COL_ACCENT : UI_COL_FG), 0);
+        lv_obj_set_style_bg_opa(g_ui.notes_tabs[tab], tab == g_ui.notes_page ? LV_OPA_COVER : UI_OPA_SEG_IDLE * 2, 0);
+    }
+    const EditField *fields = edit_fields();
+    for(uint8_t row = 0; row < kEditRows; ++row) {
+        char text[40] = "";
+        switch(fields[row]) {
+        case F_KEY: snprintf(text, sizeof(text), "Key  %s", kNoteNames[n.root]); break;
+        case F_SCALE: snprintf(text, sizeof(text), "%s", kScales[n.scale].name); break;
+        case F_LOW: snprintf(text, sizeof(text), "From  %s%u", kNoteNames[n.root], n.low_octave); break;
+        case F_OCTAVES: snprintf(text, sizeof(text), "%u octave%s", n.octaves, n.octaves == 1 ? "" : "s"); break;
+        case F_TEMPO: snprintf(text, sizeof(text), "Arp  %u BPM", g_bpm); break;
+        case F_ATTACK: format_time(text, sizeof(text), "Attack", e.attack); break;
+        case F_DECAY: format_time(text, sizeof(text), "Decay", e.decay); break;
+        case F_SUSTAIN: snprintf(text, sizeof(text), "Sustain  %u%%", (e.sustain * 100 + 127) / 255); break;
+        case F_RELEASE: format_time(text, sizeof(text), "Release", e.release); break;
+        case F_FILTER_DECAY: format_time(text, sizeof(text), "Filter", e.filter_decay); break;
+        case F_DELAY: snprintf(text, sizeof(text), "Echo  %s", kDelayDivisions[g_fx.division].name); break;
+        case F_FEEDBACK: snprintf(text, sizeof(text), "Repeats  %u%%", g_fx.feedback_pct); break;
+        case F_MIX: snprintf(text, sizeof(text), "Echo mix  %u%%", g_fx.mix_pct); break;
+        case F_NONE: break;
+        }
+        lv_label_set_text(g_ui.notes_values[row], text);
+        for(lv_obj_t *button : g_ui.notes_rows[row]) {
+            if(fields[row] == F_NONE) hide(button);
+            else show(button);
+        }
+    }
+}
+
+static void open_notes_editor(uint8_t wedge)
+{
+    stop_contacts();
+    g_ui.notes_slot = wedge;
+    g_ui.notes_page = 0;
+    update_notes_editor();
+    lv_obj_clear_flag(g_ui.notes_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
+    hide(g_ui.hold_button);
+    hide(g_ui.arp_button);
+    if(g_ui.audio.note_off) g_ui.audio.note_off();
+    ESP_LOGI("SYNTH_UI", "Wedge editor opened for wedge %u", wedge + 1);
+}
+
+static void notes_button_event(lv_event_t *event)
+{
+    if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    const uintptr_t action = (uintptr_t)lv_event_get_user_data(event);
+    NoteSettings &n = g_notes[g_ui.notes_slot];
+    synth_envelope_t &e = g_env[g_ui.notes_slot];
+    if(action == kEditDone) {
+        save_notes();
+        save_env();
+        lv_obj_add_flag(g_ui.notes_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
+        show(g_ui.hold_button);
+        show(g_ui.arp_button);
+        update_pad_text();
+        ESP_LOGI("SYNTH_UI", "Wedge %u: %s %s oct %u x%u; env A%u D%u S%u R%u F%u", g_ui.notes_slot + 1,
+                 kNoteNames[n.root], kScales[n.scale].name, n.low_octave, n.octaves,
+                 e.attack, e.decay, e.sustain, e.release, e.filter_decay);
+        return;
+    }
+    if(action >= kEditTab && action < kEditTab + kEditPages) {
+        g_ui.notes_page = (uint8_t)(action - kEditTab);
+        update_notes_editor();
+        return;
+    }
+    const int dir = (action & 1) ? 1 : -1;
+    switch(edit_fields()[action >> 1]) {
+    case F_KEY: n.root = (n.root + 12 + dir) % 12; break;
+    case F_SCALE: n.scale = (n.scale + kScaleCount + dir) % kScaleCount; break;
+    case F_LOW:
+        if(n.low_octave + dir >= kMinOctave && n.low_octave + dir <= kMaxOctave) n.low_octave += dir;
+        break;
+    case F_OCTAVES:
+        if(n.octaves + dir >= 1 && n.octaves + dir <= kMaxOctaves) n.octaves += dir;
+        break;
+    case F_TEMPO: {
+        const int bpm = g_bpm + dir * kBpmStep;
+        if(bpm >= kMinBpm && bpm <= kMaxBpm) g_bpm = (uint16_t)bpm;
+        break;
+    }
+    case F_ATTACK: e.attack = step_time(e.attack, dir); break;
+    case F_DECAY: e.decay = step_time(e.decay, dir); break;
+    case F_SUSTAIN: {
+        int pct = (e.sustain * 100 + 127) / 255 + dir * 10;
+        pct = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+        e.sustain = (uint8_t)(pct * 255 / 100);
+        break;
+    }
+    case F_RELEASE: e.release = step_time(e.release, dir); break;
+    case F_FILTER_DECAY: e.filter_decay = step_time(e.filter_decay, dir); break;
+    case F_DELAY: g_fx.division = (g_fx.division + kDelayDivisionCount + dir) % kDelayDivisionCount; break;
+    case F_FEEDBACK: {
+        const int pct = g_fx.feedback_pct + dir * 10;
+        if(pct >= 0 && pct <= kMaxFeedbackPct) g_fx.feedback_pct = (uint8_t)pct;
+        break;
+    }
+    case F_MIX: {
+        const int pct = g_fx.mix_pct + dir * 10;
+        if(pct >= 0 && pct <= 100) g_fx.mix_pct = (uint8_t)pct;
+        break;
+    }
+    case F_NONE: break;
+    }
+    send_delay();
+    /* Envelope edits apply live when this wedge is the one playing. */
+    if(g_ui.notes_slot == g_ui.program && g_ui.audio.set_envelope) g_ui.audio.set_envelope(&e);
+    update_notes_editor();
+}
+
+static lv_obj_t *notes_button(const char *text, int x, int y, int w, uintptr_t action)
+{
+    lv_obj_t *button = lv_obj_create(g_ui.notes_panel);
+    style_plain(button);
+    lv_obj_set_size(button, w, UI_NOTES_BTN);
+    lv_obj_set_pos(button, x, y);
+    lv_obj_set_style_radius(button, UI_NOTES_BTN / 2, 0);
+    lv_obj_set_style_bg_color(button, col(UI_COL_FG), 0);
+    lv_obj_set_style_bg_opa(button, UI_OPA_SEG_IDLE * 2, 0);
+    lv_obj_set_style_bg_color(button, col(UI_COL_ACCENT), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_t *text_label = label(button, text, UI_FONT_LIST, LV_OPA_COVER);
+    lv_obj_center(text_label);
+    lv_obj_add_event_cb(button, notes_button_event, LV_EVENT_CLICKED, (void *)action);
+    return button;
+}
+
+static void create_notes_editor(void)
+{
+    g_ui.notes_panel = lv_obj_create(g_ui.screen);
+    style_plain(g_ui.notes_panel);
+    lv_obj_set_size(g_ui.notes_panel, UI_SCREEN_W, UI_SCREEN_H);
+    lv_obj_set_pos(g_ui.notes_panel, 0, 0);
+    lv_obj_set_style_bg_color(g_ui.notes_panel, col(UI_COL_BG), 0);
+    lv_obj_set_style_bg_opa(g_ui.notes_panel, LV_OPA_COVER, 0);
+    g_ui.notes_title = label(g_ui.notes_panel, "", UI_FONT_TITLE, UI_OPA_TEXT_TITLE);
+    lv_obj_align(g_ui.notes_title, LV_ALIGN_TOP_MID, 0, UI_NOTES_TABS_Y - 50);
+    static const char *const kTabNames[kEditPages] = {"Notes", "Sound", "FX"};
+    for(uint8_t tab = 0; tab < kEditPages; ++tab) {
+        g_ui.notes_tabs[tab] = notes_button(kTabNames[tab], UI_CX - 195 + tab * 135, UI_NOTES_TABS_Y, 120, kEditTab + tab);
+    }
+    for(uint8_t row = 0; row < kEditRows; ++row) {
+        const int y = UI_NOTES_TOP + row * UI_NOTES_ROW_H;
+        g_ui.notes_rows[row][0] = notes_button("<", UI_CX - UI_NOTES_ROW_W / 2, y, UI_NOTES_BTN, (uintptr_t)row << 1);
+        g_ui.notes_rows[row][1] = notes_button(">", UI_CX + UI_NOTES_ROW_W / 2 - UI_NOTES_BTN, y, UI_NOTES_BTN,
+                                               ((uintptr_t)row << 1) | 1);
+        g_ui.notes_values[row] = label(g_ui.notes_panel, "", UI_FONT_LIST, LV_OPA_COVER);
+        lv_obj_set_width(g_ui.notes_values[row], UI_NOTES_ROW_W - 2 * UI_NOTES_BTN);
+        lv_obj_set_style_text_align(g_ui.notes_values[row], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(g_ui.notes_values[row], UI_CX - UI_NOTES_ROW_W / 2 + UI_NOTES_BTN, y + 14);
+    }
+    notes_button("Done", UI_CX - 80, UI_NOTES_TOP + kEditRows * UI_NOTES_ROW_H + 6, 160, kEditDone);
+    lv_obj_add_flag(g_ui.notes_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void open_picker(uint8_t wedge)
+{
+    stop_contacts();
+    g_ui.picker_slot = wedge;
+    g_ui.picker_owner = nullptr;
+    g_ui.picker_in_group = false;
+    g_ui.menu_item = 0;
+    g_ui.list_first = 0;
+    update_picker_rows();
+    lv_obj_clear_flag(g_ui.picker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
+    /* Hold/Arp live on the screen, not the pad, so hide them explicitly. */
+    hide(g_ui.hold_button);
+    hide(g_ui.arp_button);
+    if(g_ui.audio.note_off) g_ui.audio.note_off();
+    ESP_LOGI("SYNTH_UI", "Picker opened for wedge %u", wedge + 1);
 }
 
 static void pad_event(lv_event_t *event)
@@ -432,8 +889,35 @@ static void pad_event(lv_event_t *event)
     if(contact->ring) {
         bool pad_active = false;
         for(auto &c : g_ui.contacts) if(c.device != indev && c.down && !c.ring) pad_active = true;
-        if(code != LV_EVENT_RELEASED && !pad_active) select_ring_program(point);
-        else if(code == LV_EVENT_RELEASED) contact->down = false;
+        if(code == LV_EVENT_RELEASED) {
+            contact->down = false;
+            if(!contact->long_fired && lv_tick_elaps(contact->pressed_at) < UI_TAP_MAX_MS) {
+                g_ui.last_tap_wedge = wedge_at(point);
+                g_ui.last_tap_at = lv_tick_get();
+            }
+            return;
+        }
+        if(pad_active) return;
+        if(code == LV_EVENT_PRESSED) {
+            contact->long_fired = false;
+            contact->pressed_at = lv_tick_get();
+            if(wedge_at(point) == g_ui.last_tap_wedge && lv_tick_elaps(g_ui.last_tap_at) < UI_DOUBLE_TAP_MS) {
+                g_ui.last_tap_wedge = 0xFF;
+                contact->long_fired = true;  /* this press must not also long-press */
+                open_notes_editor(wedge_at(point));
+                return;
+            }
+        }
+        if(contact->long_fired) return;
+        select_ring_program(point);
+        const int mx = point.x - contact->anchor.x, my = point.y - contact->anchor.y;
+        if(mx * mx + my * my > UI_LONG_PRESS_SLOP * UI_LONG_PRESS_SLOP) {
+            contact->anchor = point;
+            contact->stationary_since = lv_tick_get();
+        } else if(!contact->long_fired && lv_tick_elaps(contact->stationary_since) >= UI_LONG_PRESS_MS) {
+            contact->long_fired = true;
+            open_picker(wedge_at(point));
+        }
         return;
     }
     if(code == LV_EVENT_RELEASED) {
@@ -461,15 +945,6 @@ static void pad_event(lv_event_t *event)
     publish_contacts();
 }
 
-static void open_picker_event(lv_event_t *event)
-{
-    if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
-    stop_contacts();
-    g_ui.picker_owner = nullptr;
-    lv_obj_clear_flag(g_ui.picker, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
-    if(g_ui.audio.note_off) g_ui.audio.note_off();
-}
 
 static void hold_event(lv_event_t *event)
 {
@@ -501,9 +976,6 @@ static void hold_event(lv_event_t *event)
     lv_obj_set_style_bg_opa(g_ui.hold_button, g_ui.hold ? LV_OPA_COVER : 150, 0);
     lv_obj_clear_flag(g_ui.hold_button, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(g_ui.hold_button);
-    vTaskDelay(5 / portTICK_PERIOD_MS);
-    lv_obj_invalidate(g_ui.screen);
-    lv_refr_now(nullptr);
     ESP_LOGI("SYNTH_UI", "Hold enabled=%d", g_ui.hold);
 }
 
@@ -526,24 +998,40 @@ static float unwrap_delta(float delta)
     return delta;
 }
 
+static uint8_t picker_count(void)
+{
+    return g_ui.picker_in_group ? group_size(g_ui.menu_group) : kGroupCount;
+}
+
+/* Menu entry under a list tap, or -1. */
+static int picker_item_at(const lv_point_t &p)
+{
+    if(p.x < UI_CX - UI_LIST_SEL_W / 2 || p.x >= UI_CX + UI_LIST_SEL_W / 2 || p.y < 225) return -1;
+    const int row = (p.y - 225) / UI_LIST_ROW_H;
+    if(row >= kPickerRows) return -1;
+    const int index = g_ui.list_first + row;
+    return index < picker_count() ? index : -1;
+}
+
 static void update_picker_rows(void)
 {
+    /* Scroll the window only when the selection leaves it, so taps never shift rows. */
+    if(g_ui.menu_item < g_ui.list_first) g_ui.list_first = g_ui.menu_item;
+    if(g_ui.menu_item >= g_ui.list_first + kPickerRows) g_ui.list_first = g_ui.menu_item - kPickerRows + 1;
     if(g_ui.picker_in_group) {
-        lv_label_set_text_fmt(g_ui.picker_crumb, "Instruments › %s", kMenu[g_ui.menu_group].name);
-        for(uint8_t i = 0; i < 6; ++i) {
-            if(i < kMenu[g_ui.menu_group].count) lv_label_set_text(g_ui.picker_rows[i], kMenu[g_ui.menu_group].items[i].name);
-            else lv_label_set_text(g_ui.picker_rows[i], "");
-        }
+        lv_label_set_text_fmt(g_ui.picker_crumb, "Wedge %u > %s", g_ui.picker_slot + 1, group_name(g_ui.menu_group));
     } else {
-        lv_label_set_text(g_ui.picker_crumb, "Instruments");
-        for(uint8_t i = 0; i < 6; ++i) {
-            if(i < sizeof(kMenu) / sizeof(kMenu[0])) lv_label_set_text(g_ui.picker_rows[i], kMenu[i].name);
-            else lv_label_set_text(g_ui.picker_rows[i], "");
-        }
+        lv_label_set_text_fmt(g_ui.picker_crumb, "Wedge %u > Instruments", g_ui.picker_slot + 1);
     }
-    for(uint8_t i = 0; i < 6; ++i) {
+    for(uint8_t i = 0; i < kPickerRows; ++i) {
+        const uint8_t index = g_ui.list_first + i;
+        const char *text = "";
+        if(index < picker_count()) {
+            text = g_ui.picker_in_group ? group_item(g_ui.menu_group, index).name : group_name(index);
+        }
+        lv_label_set_text(g_ui.picker_rows[i], text);
         lv_obj_set_y(g_ui.picker_rows[i], 225 + (int)i * UI_LIST_ROW_H);
-        const bool selected = i == g_ui.menu_item;
+        const bool selected = index == g_ui.menu_item;
         lv_obj_set_style_text_opa(g_ui.picker_rows[i], selected ? LV_OPA_COVER : UI_OPA_TEXT_LABEL, 0);
         lv_obj_set_style_text_color(g_ui.picker_rows[i], col(selected ? UI_COL_ACCENT_TEXT : UI_COL_FG), 0);
         lv_obj_set_style_bg_color(g_ui.picker_rows[i], col(UI_COL_ACCENT), 0);
@@ -560,9 +1048,12 @@ static void close_picker(void)
         g_ui.audition_timer = nullptr;
         if(g_ui.audio.note_off) g_ui.audio.note_off();
     }
+    if(g_ui.audio.set_envelope) g_ui.audio.set_envelope(&g_env[g_ui.program]);
     if(g_ui.audio.select_preset) g_ui.audio.select_preset(g_ui.active_preset);
     lv_obj_add_flag(g_ui.picker, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
+    show(g_ui.hold_button);
+    show(g_ui.arp_button);
 }
 
 static void close_picker_async(void *)
@@ -585,9 +1076,12 @@ enum PickerButtonAction : uintptr_t {
 
 static void audition_picker_item(void)
 {
-    if(g_ui.picker_in_group && g_ui.menu_group == 5) return;
-    if(g_ui.picker_in_group && g_ui.audio.select_preset) {
-        g_ui.audio.select_preset(g_ui.menu_group * 6 + g_ui.menu_item);
+    if(g_ui.picker_in_group) {
+        const uint16_t preset = group_item(g_ui.menu_group, g_ui.menu_item).preset;
+        if(preset == kNoPreset) return;
+        const synth_envelope_t envelope = preset_envelope(preset);
+        if(g_ui.audio.set_envelope) g_ui.audio.set_envelope(&envelope);
+        if(g_ui.audio.select_preset) g_ui.audio.select_preset(preset);
     }
     if(g_ui.audition_timer) lv_timer_delete(g_ui.audition_timer);
     if(g_ui.audio.note_on) g_ui.audio.note_on(44000, 160);
@@ -601,19 +1095,28 @@ static void audition_picker_item(void)
 static void select_picker_item(void)
 {
     if(g_ui.picker_in_group) {
-        const MenuItem &item = kMenu[g_ui.menu_group].items[g_ui.menu_item];
-        if(g_ui.menu_group == 5) {
+        const MenuItem item = group_item(g_ui.menu_group, g_ui.menu_item);
+        if(item.preset == kNoPreset) {
             lv_label_set_text(g_ui.picker_hint, "No samples installed");
             return;
         }
-        g_ui.program = item.program;
-        g_ui.instrument_name = item.name;
-        g_ui.active_preset = g_ui.menu_group * 6 + g_ui.menu_item;
-        if(g_ui.audio.select_preset) g_ui.audio.select_preset(g_ui.active_preset);
+        Slot &slot = g_slots[g_ui.picker_slot];
+        snprintf(slot.name, sizeof(slot.name), "%s", item.name);
+        snprintf(slot.ring, sizeof(slot.ring), "%s", g_ui.menu_group == 0 ? kPrograms[item.program].ring_name : item.name);
+        slot.layout = item.program;
+        slot.preset = item.preset;
+        save_slots();
+        g_notes[g_ui.picker_slot] = default_notes(item.preset);
+        save_notes();
+        g_env[g_ui.picker_slot] = preset_envelope(item.preset);
+        save_env();
+        lv_arclabel_set_text(g_ui.program_labels[g_ui.picker_slot], slot.ring);
+        apply_slot(g_ui.picker_slot);
         request_close_picker();
     } else {
         g_ui.menu_group = g_ui.menu_item;
         g_ui.menu_item = 0;
+        g_ui.list_first = 0;
         g_ui.picker_in_group = true;
         update_picker_rows();
     }
@@ -635,18 +1138,36 @@ static void picker_event(lv_event_t *event)
         g_ui.wheel_degrees = 0.0f;
         g_ui.wheel_travel = 0.0f;
         g_ui.wheel = point_radius(point) >= UI_WHEEL_R_IN;
-        if(!g_ui.wheel && point.x >= UI_CX - UI_LIST_SEL_W / 2 && point.x < UI_CX + UI_LIST_SEL_W / 2 && point.y >= 225) {
-            const int row = (point.y - 225) / UI_LIST_ROW_H;
-            const uint8_t count = g_ui.picker_in_group ? kMenu[g_ui.menu_group].count : sizeof(kMenu) / sizeof(kMenu[0]);
-            if(row < count) {
-                g_ui.menu_item = static_cast<uint8_t>(row);
-                update_picker_rows();
-            }
+        g_ui.list_touch = !g_ui.wheel && point.x >= UI_CX - UI_LIST_SEL_W / 2 &&
+                          point.x < UI_CX + UI_LIST_SEL_W / 2 && point.y >= 225;
+        g_ui.list_drag = false;
+        g_ui.drag_first = g_ui.list_first;
+        const int index = g_ui.wheel ? -1 : picker_item_at(point);
+        if(index >= 0) {
+            g_ui.menu_item = static_cast<uint8_t>(index);
+            update_picker_rows();
         }
         ESP_LOGI("SYNTH_UI", "Picker press x=%d y=%d wheel=%d free=%u largest=%u",
                  point.x, point.y, g_ui.wheel,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        return;
+    }
+    if(code == LV_EVENT_PRESSING && g_ui.list_touch) {
+        const int dy = point.y - g_ui.press_point.y;
+        if(!g_ui.list_drag && (dy > UI_LIST_DRAG_SLOP || dy < -UI_LIST_DRAG_SLOP)) g_ui.list_drag = true;
+        if(!g_ui.list_drag) return;
+        const int count = picker_count();
+        const int max_first = count > kPickerRows ? count - kPickerRows : 0;
+        int first = g_ui.drag_first - (dy >= 0 ? dy + UI_LIST_ROW_H / 2 : dy - UI_LIST_ROW_H / 2) / UI_LIST_ROW_H;
+        first = first < 0 ? 0 : (first > max_first ? max_first : first);
+        if(first != g_ui.list_first) {
+            g_ui.list_first = (uint8_t)first;
+            /* Keep the highlight inside the visible window while dragging. */
+            if(g_ui.menu_item < first) g_ui.menu_item = first;
+            if(g_ui.menu_item >= first + kPickerRows) g_ui.menu_item = first + kPickerRows - 1;
+            update_picker_rows();
+        }
         return;
     }
     if(code == LV_EVENT_PRESSING && g_ui.wheel) {
@@ -656,14 +1177,14 @@ static void picker_event(lv_event_t *event)
         g_ui.wheel_travel += fabsf(delta);
         while(g_ui.wheel_degrees >= UI_WHEEL_STEP_DEG) {
             g_ui.wheel_degrees -= UI_WHEEL_STEP_DEG;
-            uint8_t count = g_ui.picker_in_group ? kMenu[g_ui.menu_group].count : sizeof(kMenu) / sizeof(kMenu[0]);
+            uint8_t count = picker_count();
             g_ui.menu_item = (g_ui.menu_item + 1) % count;
             update_picker_rows();
             ESP_LOGI("SYNTH_UI", "Wheel next item=%u", g_ui.menu_item);
         }
         while(g_ui.wheel_degrees <= -UI_WHEEL_STEP_DEG) {
             g_ui.wheel_degrees += UI_WHEEL_STEP_DEG;
-            uint8_t count = g_ui.picker_in_group ? kMenu[g_ui.menu_group].count : sizeof(kMenu) / sizeof(kMenu[0]);
+            uint8_t count = picker_count();
             g_ui.menu_item = (g_ui.menu_item + count - 1) % count;
             update_picker_rows();
             ESP_LOGI("SYNTH_UI", "Wheel previous item=%u", g_ui.menu_item);
@@ -673,12 +1194,11 @@ static void picker_event(lv_event_t *event)
     }
     if(code != LV_EVENT_RELEASED) return;
     if(!g_ui.wheel) {
-        const uint8_t count = g_ui.picker_in_group ? kMenu[g_ui.menu_group].count : sizeof(kMenu) / sizeof(kMenu[0]);
-        if(point.x < UI_CX - UI_LIST_SEL_W / 2 || point.x >= UI_CX + UI_LIST_SEL_W / 2 ||
-           point.y < 225 || point.y >= 225 + count * UI_LIST_ROW_H) return;
-        const int row = (point.y - 225) / UI_LIST_ROW_H;
-        g_ui.menu_item = static_cast<uint8_t>(row);
-        ESP_LOGI("SYNTH_UI", "Picker row=%d group=%d", row, g_ui.picker_in_group);
+        if(g_ui.list_drag) return;
+        const int index = picker_item_at(point);
+        if(index < 0) return;
+        g_ui.menu_item = static_cast<uint8_t>(index);
+        ESP_LOGI("SYNTH_UI", "Picker item=%d group=%d", index, g_ui.picker_in_group);
         select_picker_item();
         return;
     }
@@ -696,7 +1216,7 @@ static void picker_event(lv_event_t *event)
             /* Audition is deliberately explicit; scrolling is silent. */
             audition_picker_item();
         } else if(fabsf(fabsf(angle) - 90.0f) < UI_WHEEL_BTN_DEG) {
-            const uint8_t count = g_ui.picker_in_group ? kMenu[g_ui.menu_group].count : sizeof(kMenu) / sizeof(kMenu[0]);
+            const uint8_t count = picker_count();
             g_ui.menu_item = (g_ui.menu_item + (angle > 0 ? 1 : count - 1)) % count;
             update_picker_rows();
         } else {
@@ -762,40 +1282,34 @@ static void create_pad(void)
         lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
         lv_obj_set_style_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
 
-        lv_obj_t *ring_label = label(g_ui.pad, kPrograms[i].ring_name, UI_FONT_RING, UI_OPA_TEXT_LABEL);
+        /* Curved label centred in the segment band (lv_arc strokes inward from its edge). */
+        lv_obj_t *ring_label = lv_arclabel_create(g_ui.pad);
+        lv_obj_remove_style_all(ring_label);
+        lv_obj_clear_flag(ring_label, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_size(ring_label, UI_SCREEN_W, UI_SCREEN_H);
+        lv_obj_set_pos(ring_label, 0, 0);
+        lv_obj_set_style_text_font(ring_label, UI_FONT_RING, 0);
+        lv_obj_set_style_text_color(ring_label, col(UI_COL_FG), 0);
+        lv_obj_set_style_text_opa(ring_label, UI_OPA_TEXT_LABEL, 0);
+        lv_arclabel_set_text(ring_label, g_slots[i].ring);
+        lv_arclabel_set_overflow(ring_label, LV_ARCLABEL_OVERFLOW_ELLIPSIS);
+        lv_arclabel_set_radius(ring_label, UI_PROG_RING_R - UI_PROG_RING_W / 2);
+        const int centre = (i * UI_PROG_SEG_DEG + 270) % 360;
+        const int span = UI_PROG_SEG_DEG - 2 * UI_PROG_SEG_GAP_DEG;
+        lv_arclabel_set_angle_start(ring_label, centre - span / 2);
+        lv_arclabel_set_angle_size(ring_label, span);
+        /* Bottom half runs counter-clockwise so text stays upright. */
+        lv_arclabel_set_dir(ring_label, centre > 0 && centre < 180 ? LV_ARCLABEL_DIR_COUNTER_CLOCKWISE
+                                                                   : LV_ARCLABEL_DIR_CLOCKWISE);
+        lv_arclabel_set_text_horizontal_align(ring_label, LV_ARCLABEL_TEXT_ALIGN_CENTER);
+        lv_arclabel_set_text_vertical_align(ring_label, LV_ARCLABEL_TEXT_ALIGN_CENTER);
         g_ui.program_labels[i] = ring_label;
-        lv_obj_set_width(ring_label, 58);
-        lv_obj_set_style_text_align(ring_label, LV_TEXT_ALIGN_CENTER, 0);
-        float angle = ((float)i * UI_PROG_SEG_DEG - 90.0f) * (float)M_PI / 180.0f;
-        lv_obj_set_pos(ring_label,
-                       (int)(UI_CX + cosf(angle) * 320.0f - 29),
-                       (int)(UI_CY + sinf(angle) * 320.0f - 8));
-
     }
-
-    lv_obj_t *instrument = lv_obj_create(g_ui.pad);
-    style_plain(instrument);
-    lv_obj_set_size(instrument, 150, 30);
-    lv_obj_set_pos(instrument, UI_CX - 75, 3);
-    lv_obj_add_event_cb(instrument, open_picker_event, LV_EVENT_CLICKED, nullptr);
-    lv_obj_set_style_radius(instrument, 15, 0);
-    lv_obj_set_style_border_width(instrument, 1, 0);
-    lv_obj_set_style_border_color(instrument, col(UI_COL_ACCENT), 0);
-    lv_obj_set_style_border_opa(instrument, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(instrument, col(UI_COL_BG), 0);
-    lv_obj_set_style_bg_opa(instrument, LV_OPA_COVER, 0);
-    lv_obj_t *instrument_label = label(instrument, "Instrument", UI_FONT_HINT, UI_OPA_TEXT_TITLE);
-    lv_obj_set_style_text_color(instrument_label, col(UI_COL_ACCENT_LIGHT), 0);
-    lv_obj_center(instrument_label);
 
     g_ui.title = label(g_ui.pad, "", UI_FONT_TITLE, UI_OPA_TEXT_TITLE);
     lv_obj_align(g_ui.title, LV_ALIGN_TOP_MID, 0, UI_PAD_TITLE_Y - 18);
     g_ui.subtitle = label(g_ui.pad, "", UI_FONT_SUB, UI_OPA_TEXT_SUB);
     lv_obj_align(g_ui.subtitle, LV_ALIGN_TOP_MID, 0, UI_PAD_SUB_Y - 16);
-    g_ui.x_label = label(g_ui.pad, "", UI_FONT_HINT, UI_OPA_TEXT_HINT);
-    lv_obj_align(g_ui.x_label, LV_ALIGN_TOP_MID, 0, UI_PAD_XLABEL_Y - 10);
-    g_ui.y_label = label(g_ui.pad, "", UI_FONT_HINT, UI_OPA_TEXT_HINT);
-    lv_obj_set_pos(g_ui.y_label, UI_PAD_YLABEL_X - 45, UI_CY - 12);
     g_ui.readout = label(g_ui.pad, "", UI_FONT_READOUT, UI_OPA_TEXT_SUB);
     lv_obj_align(g_ui.readout, LV_ALIGN_TOP_MID, 0, UI_PAD_READOUT_Y - 10);
 
@@ -842,7 +1356,6 @@ static void create_pad(void)
     lv_obj_clear_flag(g_ui.cross_y, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_move_foreground(g_ui.hold_button);
     lv_obj_move_foreground(g_ui.arp_button);
-    lv_obj_move_foreground(instrument);
     lv_obj_invalidate(g_ui.hold_button);
     lv_obj_invalidate(g_ui.arp_button);
     ESP_LOGI("SYNTH_UI", "UI setup complete: buttons parent is screen, arp parent=%p screen=%p pad=%p",
@@ -927,7 +1440,13 @@ void synth_ui_init(lv_obj_t *screen, const synth_ui_audio_callbacks_t *audio)
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(screen, col(UI_COL_BG), LV_PART_MAIN | LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
+    load_slots();
+    load_notes();
+    load_env();
     create_pad();
     create_picker();
+    create_notes_editor();
+    send_delay();
+    apply_slot(0);
     lv_timer_create(arp_timer, 10, nullptr);
 }
