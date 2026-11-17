@@ -114,7 +114,7 @@ esp_err_t init_codec(void)
     ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(speaker_codec_handle, 70), TAG,
                         "Failed to set ES8311 output volume");
 
-    const esp_codec_dev_sample_info_t sample_info = {
+    esp_codec_dev_sample_info_t sample_info = {
         .bits_per_sample = 16,
         .channel = 2,
         .channel_mask = 0,
