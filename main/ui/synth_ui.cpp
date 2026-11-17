@@ -16,33 +16,38 @@ struct Program {
 };
 
 static const Program kPrograms[UI_PROG_COUNT] = {
-    {"Filter sweep", "Filter", "Cutoff", "Resonance", false},
-    {"Band sweep", "Band", "Center", "Width", false},
+    {"Filter sweep", "FILT", "Cutoff", "Resonance", false},
+    {"Band sweep", "BAND", "Center", "Width", false},
     {"Acid", "Acid", "Cutoff", "Resonance", false},
-    {"Touch scale", "Scale", "Note", "Filter", true},
-    {"FM bell", "FM bell", "Ratio", "Mod index", false},
+    {"Touch scale", "SCALE", "Note", "Filter", true},
+    {"FM bell", "FM", "Ratio", "Mod index", false},
     {"Arp", "Arp", "Rate", "Span", false},
-    {"Vibrato", "Vibrato", "Rate", "Depth", false},
-    {"Tremolo gate", "Tremolo", "Rate", "Depth", false},
+    {"Vibrato", "VIB", "Rate", "Depth", false},
+    {"Tremolo gate", "TREM", "Rate", "Depth", false},
     {"PWM lead", "PWM", "Note", "Pulse width", true},
-    {"Bitcrush", "Crush", "Bits", "Cutoff", false},
+    {"Bitcrush", "CRUSH", "Bits", "Cutoff", false},
     {"Pluck", "Pluck", "Note", "Damping", true},
     {"Organ", "Organ", "Note", "Reverb", true},
 };
 
+struct MenuItem {
+    const char *name;
+    uint8_t program;
+};
+
 struct MenuGroup {
     const char *name;
-    const char *items[6];
+    MenuItem items[6];
     uint8_t count;
 };
 
 static const MenuGroup kMenu[] = {
-    {"Synth", {"Saw lead", "Pulse lead", "Filter synth", "Acid bass", "Sub bass"}, 5},
-    {"Keys", {"FM e-piano", "FM bell", "Organ B3", "Organ + Leslie"}, 4},
-    {"Plucked", {"Nylon guitar", "Harp", "Pizzicato"}, 3},
-    {"Drums", {"Noise hat", "Noise snare", "Sine kick"}, 3},
-    {"Wavetables", {"Glass", "Formant", "Digital"}, 3},
-    {"Samples", {"Placeholders"}, 1},
+    {"Synth", {{"Saw lead", 0}, {"Pulse lead", 8}, {"Filter synth", 0}, {"Acid bass", 2}, {"Sub bass", 2}}, 5},
+    {"Keys", {{"FM e-piano", 4}, {"FM bell", 4}, {"Organ B3", 11}, {"Organ + Leslie", 11}}, 4},
+    {"Plucked", {{"Nylon guitar", 10}, {"Harp", 10}, {"Pizzicato", 10}}, 3},
+    {"Drums", {{"Noise hat", 9}, {"Noise snare", 9}, {"Sine kick", 9}}, 3},
+    {"Wavetables", {{"Glass", 4}, {"Formant", 0}, {"Digital", 9}}, 3},
+    {"Samples", {{"Placeholders", 0}}, 1},
 };
 
 struct UiState {
@@ -72,6 +77,7 @@ struct UiState {
     uint8_t program = 0;
     uint8_t menu_group = 0;
     uint8_t menu_item = 0;
+    const char *instrument_name = nullptr;
     bool picker_in_group = false;
     bool hold = false;
     bool touching = false;
@@ -99,6 +105,13 @@ static void style_plain(lv_obj_t *obj)
     lv_obj_set_style_border_opa(obj, LV_OPA_TRANSP, active);
     lv_obj_set_style_outline_opa(obj, LV_OPA_TRANSP, active);
     lv_obj_set_style_shadow_opa(obj, LV_OPA_TRANSP, active);
+    lv_obj_set_style_bg_color(obj, col(UI_COL_BG), active);
+    lv_obj_set_style_border_color(obj, col(UI_COL_BG), active);
+    lv_obj_set_style_outline_color(obj, col(UI_COL_BG), active);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, LV_STATE_FOCUSED);
+    lv_obj_set_style_border_opa(obj, LV_OPA_TRANSP, LV_STATE_FOCUSED);
+    lv_obj_set_style_outline_opa(obj, LV_OPA_TRANSP, LV_STATE_FOCUSED);
+    lv_obj_set_style_shadow_opa(obj, LV_OPA_TRANSP, LV_STATE_FOCUSED);
 }
 
 static lv_obj_t *label(lv_obj_t *parent, const char *text, const lv_font_t *font,
@@ -137,7 +150,7 @@ static void show(lv_obj_t *obj)
 static void update_pad_text(void)
 {
     const Program &p = kPrograms[g_ui.program];
-    lv_label_set_text(g_ui.title, p.name);
+    lv_label_set_text(g_ui.title, g_ui.instrument_name ? g_ui.instrument_name : p.name);
     lv_label_set_text_fmt(g_ui.subtitle, "P%02u · CPU --%%", (unsigned)(g_ui.program + 1));
     lv_label_set_text_fmt(g_ui.x_label, "%s →", p.x_label);
     lv_label_set_text_fmt(g_ui.y_label, "%s ↑", p.y_label);
@@ -267,7 +280,7 @@ static void update_picker_rows(void)
     if(g_ui.picker_in_group) {
         lv_label_set_text_fmt(g_ui.picker_crumb, "Instruments › %s", kMenu[g_ui.menu_group].name);
         for(uint8_t i = 0; i < 6; ++i) {
-            if(i < kMenu[g_ui.menu_group].count) lv_label_set_text(g_ui.picker_rows[i], kMenu[g_ui.menu_group].items[i]);
+            if(i < kMenu[g_ui.menu_group].count) lv_label_set_text(g_ui.picker_rows[i], kMenu[g_ui.menu_group].items[i].name);
             else lv_label_set_text(g_ui.picker_rows[i], "");
         }
     } else {
@@ -288,6 +301,60 @@ static void close_picker(void)
 {
     lv_obj_add_flag(g_ui.picker, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
+}
+
+enum PickerButtonAction : uintptr_t {
+    PICKER_BACK = 1,
+    PICKER_AUDITION,
+    PICKER_PREVIOUS,
+    PICKER_NEXT,
+};
+
+static void picker_button_event(lv_event_t *event)
+{
+    if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    const auto action = static_cast<PickerButtonAction>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(event)));
+    switch(action) {
+    case PICKER_BACK:
+        if(g_ui.picker_in_group) {
+            g_ui.picker_in_group = false;
+            g_ui.menu_item = g_ui.menu_group;
+            update_picker_rows();
+        } else {
+            close_picker();
+        }
+        break;
+    case PICKER_AUDITION:
+        if(g_ui.audio.note_on) g_ui.audio.note_on(44000, 180);
+        if(g_ui.audio.note_off) g_ui.audio.note_off();
+        break;
+    case PICKER_PREVIOUS:
+        g_ui.program = (g_ui.program + UI_PROG_COUNT - 1) % UI_PROG_COUNT;
+        g_ui.instrument_name = nullptr;
+        update_pad_text();
+        break;
+    case PICKER_NEXT:
+        g_ui.program = (g_ui.program + 1) % UI_PROG_COUNT;
+        g_ui.instrument_name = nullptr;
+        update_pad_text();
+        break;
+    }
+}
+
+static void select_picker_item(void)
+{
+    if(g_ui.picker_in_group) {
+        const MenuItem &item = kMenu[g_ui.menu_group].items[g_ui.menu_item];
+        g_ui.program = item.program;
+        g_ui.instrument_name = item.name;
+        close_picker();
+        update_pad_text();
+    } else {
+        g_ui.menu_group = g_ui.menu_item;
+        g_ui.menu_item = 0;
+        g_ui.picker_in_group = true;
+        update_picker_rows();
+    }
 }
 
 static void picker_event(lv_event_t *event)
@@ -323,6 +390,10 @@ static void picker_event(lv_event_t *event)
         return;
     }
     if(code != LV_EVENT_RELEASED) return;
+    if(!g_ui.wheel) {
+        select_picker_item();
+        return;
+    }
     if(g_ui.wheel && fabsf(g_ui.wheel_degrees) < UI_WHEEL_TAP_DEG) {
         float angle = point_angle(g_ui.press_point);
         if(fabsf(angle) < UI_WHEEL_BTN_DEG) {
@@ -340,14 +411,8 @@ static void picker_event(lv_event_t *event)
         } else if(fabsf(fabsf(angle) - 90.0f) < UI_WHEEL_BTN_DEG) {
             g_ui.program = (g_ui.program + (angle > 0 ? 1 : UI_PROG_COUNT - 1)) % UI_PROG_COUNT;
             update_pad_text();
-        } else if(g_ui.picker_in_group) {
-            close_picker();
-            update_pad_text();
         } else {
-            g_ui.menu_group = g_ui.menu_item;
-            g_ui.menu_item = 0;
-            g_ui.picker_in_group = true;
-            update_picker_rows();
+            select_picker_item();
         }
     }
 }
@@ -404,13 +469,13 @@ static void create_pad(void)
         lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
         lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
 
-        lv_obj_t *ring_label = label(g_ui.pad, kPrograms[i].ring_name, UI_FONT_HINT, UI_OPA_TEXT_LABEL);
-        lv_obj_set_width(ring_label, 78);
+        lv_obj_t *ring_label = label(g_ui.pad, kPrograms[i].ring_name, UI_FONT_RING, UI_OPA_TEXT_LABEL);
+        lv_obj_set_width(ring_label, 58);
         lv_obj_set_style_text_align(ring_label, LV_TEXT_ALIGN_CENTER, 0);
         float angle = ((float)i * UI_PROG_SEG_DEG - 90.0f) * (float)M_PI / 180.0f;
         lv_obj_set_pos(ring_label,
-                       (int)(UI_CX + cosf(angle) * 320.0f - 39),
-                       (int)(UI_CY + sinf(angle) * 320.0f - 9));
+                       (int)(UI_CX + cosf(angle) * 320.0f - 29),
+                       (int)(UI_CY + sinf(angle) * 320.0f - 8));
     }
 
     lv_obj_t *instrument = lv_obj_create(g_ui.pad);
@@ -469,6 +534,20 @@ static void create_pad(void)
     update_pad_text();
 }
 
+static lv_obj_t *picker_button(lv_obj_t *parent, const char *text, int x, int y, int w, int h,
+                               PickerButtonAction action)
+{
+    lv_obj_t *button = lv_obj_create(parent);
+    style_plain(button);
+    lv_obj_set_size(button, w, h);
+    lv_obj_set_pos(button, x, y);
+    lv_obj_add_event_cb(button, picker_button_event, LV_EVENT_CLICKED,
+                        reinterpret_cast<void *>(static_cast<uintptr_t>(action)));
+    lv_obj_t *button_label = label(button, text, UI_FONT_SUB, UI_OPA_TEXT_LABEL);
+    lv_obj_center(button_label);
+    return button;
+}
+
 static void create_picker(void)
 {
     g_ui.picker = lv_obj_create(g_ui.screen);
@@ -499,14 +578,10 @@ static void create_picker(void)
     }
     g_ui.picker_hint = label(g_ui.picker, "Tap center to select", UI_FONT_HINT, UI_OPA_TEXT_HINT);
     lv_obj_align(g_ui.picker_hint, LV_ALIGN_TOP_MID, 0, UI_HINT_Y - 10);
-    label(g_ui.picker, "Menu", UI_FONT_SUB, UI_OPA_TEXT_LABEL);
-    lv_obj_align(lv_obj_get_child(g_ui.picker, lv_obj_get_child_count(g_ui.picker) - 1), LV_ALIGN_TOP_MID, 0, 70);
-    label(g_ui.picker, "Audition", UI_FONT_SUB, UI_OPA_TEXT_LABEL);
-    lv_obj_align(lv_obj_get_child(g_ui.picker, lv_obj_get_child_count(g_ui.picker) - 1), LV_ALIGN_BOTTOM_MID, 0, -100);
-    label(g_ui.picker, LV_SYMBOL_PREV, UI_FONT_SUB, UI_OPA_TEXT_LABEL);
-    lv_obj_align(lv_obj_get_child(g_ui.picker, lv_obj_get_child_count(g_ui.picker) - 1), LV_ALIGN_LEFT_MID, 70, 0);
-    label(g_ui.picker, LV_SYMBOL_NEXT, UI_FONT_SUB, UI_OPA_TEXT_LABEL);
-    lv_obj_align(lv_obj_get_child(g_ui.picker, lv_obj_get_child_count(g_ui.picker) - 1), LV_ALIGN_RIGHT_MID, -70, 0);
+    picker_button(g_ui.picker, "Menu", UI_CX - 75, 46, 150, 70, PICKER_BACK);
+    picker_button(g_ui.picker, "Audition", UI_CX - 75, UI_SCREEN_H - 116, 150, 70, PICKER_AUDITION);
+    picker_button(g_ui.picker, LV_SYMBOL_PREV, 36, UI_CY - 50, 110, 100, PICKER_PREVIOUS);
+    picker_button(g_ui.picker, LV_SYMBOL_NEXT, UI_SCREEN_W - 146, UI_CY - 50, 110, 100, PICKER_NEXT);
     update_picker_rows();
     hide(g_ui.picker);
 }

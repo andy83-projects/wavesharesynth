@@ -45,7 +45,7 @@ extern "C" {
 
 /* ---------------------------------------------------------------------------
  * Typography — LVGL built-in Montserrat. Enable these sizes in menuconfig:
- * CONFIG_LV_FONT_MONTSERRAT_{16,18,20,22,26,30}=y
+ * CONFIG_LV_FONT_MONTSERRAT_{14,16,18,20,22,26,30}=y
  * Arrow glyphs: use LV_SYMBOL_PREV / LV_SYMBOL_NEXT (in the built-in fonts).
  * ------------------------------------------------------------------------- */
 #define UI_FONT_TITLE          (&lv_font_montserrat_30)  /* program name        */
@@ -54,6 +54,7 @@ extern "C" {
 #define UI_FONT_READOUT        (&lv_font_montserrat_20)  /* X/Y values, toast   */
 #define UI_FONT_SMALL          (&lv_font_montserrat_18)  /* hold pill, crumb    */
 #define UI_FONT_HINT           (&lv_font_montserrat_16)  /* axis lbl, lanes, hint */
+#define UI_FONT_RING           (&lv_font_montserrat_14)  /* compact outer-ring labels */
 
 /* ===========================================================================
  * PAD SCREEN
