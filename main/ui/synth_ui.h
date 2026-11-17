@@ -12,6 +12,7 @@ typedef struct {
     uint32_t trigger;
     bool accent;
     bool slide;
+    bool sustain;
 } synth_ui_note_t;
 
 typedef struct {

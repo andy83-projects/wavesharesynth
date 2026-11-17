@@ -74,6 +74,8 @@ struct UiState {
     lv_obj_t *readout = nullptr;
     lv_obj_t *hold_button = nullptr;
     lv_obj_t *hold_label = nullptr;
+    lv_obj_t *arp_button = nullptr;
+    lv_obj_t *arp_label = nullptr;
     lv_obj_t *touch_halo = nullptr;
     lv_obj_t *touch_core = nullptr;
     lv_obj_t *touch_dot = nullptr;
@@ -102,6 +104,7 @@ struct UiState {
     lv_timer_t *audition_timer = nullptr;
     lv_indev_t *picker_owner = nullptr;
     bool arp = false;
+    bool arp_enabled = false;
     uint32_t arp_started = 0;
     uint32_t arp_step = UINT32_MAX;
     uint32_t trigger = 0;
@@ -263,7 +266,7 @@ static synth_ui_note_t pad_note(int x, int y, uint32_t trigger)
     uint16_t volume = (uint16_t)(((uint32_t)(UI_MAP_MAX - y) * 255u) /
                                  (UI_MAP_MAX - UI_MAP_MIN));
     if(g_ui.active_preset == 3) volume = 200;
-    return {freq, volume, true, trigger, false, false};
+    return {freq, volume, true, trigger, false, false, true};
 }
 
 static void update_acid_gesture(void)
@@ -295,6 +298,12 @@ static void publish_contacts(void)
         notes[i] = g_ui.contacts[i].note;
         if(notes[i].pressed) ++count;
     }
+    if(count > 0 && g_ui.arp_enabled && !g_ui.arp) {
+        g_ui.arp = true;
+        g_ui.arp_started = lv_tick_get();
+        g_ui.arp_step = UINT32_MAX;
+        ESP_LOGI("SYNTH_UI", "Arp started explicitly with %u held notes", count);
+    }
     if(count == 0) {
         g_ui.arp = false;
         lv_label_set_text(g_ui.readout, "Touch to play");
@@ -320,6 +329,7 @@ static void publish_contacts(void)
             notes[0].frequency_centi_hz = (uint32_t)(held[0].frequency_centi_hz * ratios[step % 4]);
         }
         notes[0].trigger = g_ui.trigger;
+        notes[0].sustain = false;
         if(g_ui.active_preset == 3) {
             notes[0].accent = step % 4 == 0;
             notes[0].slide = step % 4 == 2 || step % 4 == 3;
@@ -335,6 +345,24 @@ static void publish_contacts(void)
     if(g_ui.acid_sweep) lv_label_set_text_fmt(g_ui.readout, "ACID%s · %u Hz · res %u%%",
         g_ui.arp ? " ARP" : "", g_ui.acid_cutoff, g_ui.acid_resonance * 100 / 255);
     if(g_ui.audio.set_notes) g_ui.audio.set_notes(notes);
+}
+
+static void arp_timer(lv_timer_t *)
+{
+    if(g_ui.arp_enabled && g_ui.arp) publish_contacts();
+}
+
+static void arp_event(lv_event_t *event)
+{
+    if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    g_ui.arp_enabled = !g_ui.arp_enabled;
+    g_ui.arp = false;
+    lv_label_set_text(g_ui.arp_label, g_ui.arp_enabled ? "Arp on" : "Arp off");
+    lv_obj_set_style_bg_color(g_ui.arp_button, col(g_ui.arp_enabled ? UI_COL_ACCENT : UI_COL_FG), 0);
+    lv_obj_set_style_bg_opa(g_ui.arp_button, g_ui.arp_enabled ? LV_OPA_COVER : UI_OPA_PILL_IDLE, 0);
+    lv_obj_set_style_text_color(g_ui.arp_label, col(g_ui.arp_enabled ? UI_COL_ACCENT_TEXT : UI_COL_FG), 0);
+    ESP_LOGI("SYNTH_UI", "Arp enabled=%d", g_ui.arp_enabled);
+    publish_contacts();
 }
 
 static void stop_contacts(void)
@@ -439,6 +467,21 @@ static void hold_event(lv_event_t *event)
 {
     if(lv_event_get_code(event) != LV_EVENT_CLICKED) return;
     g_ui.hold = !g_ui.hold;
+    if(g_ui.hold) {
+        bool any = false;
+        UiState::Contact *last = nullptr;
+        for(auto &contact : g_ui.contacts) {
+            any |= contact.note.pressed;
+            if(!contact.ring && contact.note.frequency_centi_hz &&
+               (!last || (int32_t)(contact.note.trigger - last->note.trigger) > 0)) last = &contact;
+        }
+        if(!any && last) {
+            last->note.pressed = true;
+            last->note.trigger = ++g_ui.trigger;
+            show(last->marker);
+        }
+        publish_contacts();
+    }
     if(!g_ui.hold) {
         for(auto &contact : g_ui.contacts) if(!contact.down) {
             contact.note.pressed = false;
@@ -449,6 +492,7 @@ static void hold_event(lv_event_t *event)
     lv_obj_set_style_bg_color(g_ui.hold_button, col(g_ui.hold ? UI_COL_ACCENT : UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.hold_button, g_ui.hold ? LV_OPA_COVER : UI_OPA_PILL_IDLE, 0);
     lv_obj_set_style_text_color(g_ui.hold_label, col(g_ui.hold ? UI_COL_ACCENT_TEXT : UI_COL_FG), 0);
+    ESP_LOGI("SYNTH_UI", "Hold enabled=%d", g_ui.hold);
 }
 
 static float point_angle(const lv_point_t &p)
@@ -746,7 +790,7 @@ static void create_pad(void)
     g_ui.hold_button = lv_obj_create(g_ui.pad);
     style_plain(g_ui.hold_button);
     lv_obj_set_size(g_ui.hold_button, UI_HOLD_W, UI_HOLD_H);
-    lv_obj_align(g_ui.hold_button, LV_ALIGN_TOP_MID, 0, UI_HOLD_CY - UI_HOLD_H / 2);
+    lv_obj_align(g_ui.hold_button, LV_ALIGN_TOP_MID, -60, UI_HOLD_CY - UI_HOLD_H / 2);
     lv_obj_set_style_radius(g_ui.hold_button, UI_HOLD_RADIUS, 0);
     lv_obj_set_style_bg_color(g_ui.hold_button, col(UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.hold_button, UI_OPA_PILL_IDLE, 0);
@@ -754,6 +798,17 @@ static void create_pad(void)
     g_ui.hold_label = label(g_ui.hold_button, "Hold", UI_FONT_SMALL, UI_OPA_TEXT_LABEL);
     lv_obj_center(g_ui.hold_label);
     lv_obj_add_event_cb(g_ui.hold_button, hold_event, LV_EVENT_CLICKED, nullptr);
+
+    g_ui.arp_button = lv_obj_create(g_ui.pad);
+    style_plain(g_ui.arp_button);
+    lv_obj_set_size(g_ui.arp_button, UI_HOLD_W, UI_HOLD_H);
+    lv_obj_align(g_ui.arp_button, LV_ALIGN_TOP_MID, 60, UI_HOLD_CY - UI_HOLD_H / 2);
+    lv_obj_set_style_radius(g_ui.arp_button, UI_HOLD_RADIUS, 0);
+    lv_obj_set_style_bg_color(g_ui.arp_button, col(UI_COL_FG), 0);
+    lv_obj_set_style_bg_opa(g_ui.arp_button, UI_OPA_PILL_IDLE, 0);
+    g_ui.arp_label = label(g_ui.arp_button, "Arp off", UI_FONT_SMALL, UI_OPA_TEXT_LABEL);
+    lv_obj_center(g_ui.arp_label);
+    lv_obj_add_event_cb(g_ui.arp_button, arp_event, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t *touch = lv_obj_create(g_ui.pad);
     style_plain(touch);
@@ -774,6 +829,7 @@ static void create_pad(void)
     lv_obj_clear_flag(g_ui.cross_x, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(g_ui.cross_y, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_move_foreground(g_ui.hold_button);
+    lv_obj_move_foreground(g_ui.arp_button);
     lv_obj_move_foreground(instrument);
     for(auto &contact : g_ui.contacts) {
         contact.marker = circle(g_ui.pad, 24, col(UI_COL_ACCENT_LIGHT), LV_OPA_COVER);
@@ -857,4 +913,5 @@ void synth_ui_init(lv_obj_t *screen, const synth_ui_audio_callbacks_t *audio)
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
     create_pad();
     create_picker();
+    lv_timer_create(arp_timer, 10, nullptr);
 }

@@ -166,6 +166,7 @@ static void synth_output_callback(int16_t *samples, int num_samples)
                 if(note.pressed && (!priority || (int32_t)(note.trigger - priority->trigger) > 0)) priority = &note;
             }
             if(priority && priority->frequency_centi_hz > 0) {
+                acid_voice->set_sustain(priority->sustain);
                 const int midi = (int)lroundf(69.0f + 12.0f * log2f(priority->frequency_centi_hz / 44000.0f));
                 if(!acid_gate || priority->trigger != acid_trigger || midi != acid_midi) {
                     const bool moving_held_note = acid_gate && priority->trigger == acid_trigger;
@@ -241,7 +242,7 @@ static void queue_synth_command(uint32_t frequency_centi_hz, uint16_t volume,
     command.preset = desired_preset;
     command.cutoff_hz = desired_cutoff;
     command.resonance = desired_resonance;
-    command.notes[0] = {frequency_centi_hz, volume, pressed, 0, false, false};
+    command.notes[0] = {frequency_centi_hz, volume, pressed, 0, false, false, false};
     xQueueOverwrite(synth_command_queue, &command);
 }
 

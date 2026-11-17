@@ -46,9 +46,31 @@ static double note_energy(bool accent)
     return energy;
 }
 
+static void verify_held_note()
+{
+    auto voice = std::make_unique<Open303Voice>();
+    voice->set_controls(800, 180);
+    voice->set_sustain(true);
+    voice->note_on(36, false, false, 200);
+    int16_t samples[128];
+    double late_energy = 0;
+    for(unsigned block = 0; block < 2500; ++block) {
+        voice->render(samples, 128); /* One note-on, ten seconds of audio. */
+        if(block >= 2000) for(auto sample : samples) late_energy += double(sample) * sample;
+    }
+    const double rms = std::sqrt(late_energy / (500 * 128));
+    assert(rms > 100); /* Audible after the original envelope would have died. */
+    assert(voice->fault_count() == 0);
+    voice->note_off();
+    for(unsigned block = 0; block < 500; ++block) voice->render(samples, 128);
+    for(auto sample : samples) assert(std::abs(sample) <= 1);
+    std::printf("Held-note RMS after 8 seconds: %.1f; release returns to silence\n", rms);
+}
+
 int main()
 {
     verify_anti_alias_response();
+    verify_held_note();
     assert(note_energy(true) > note_energy(false) * 1.2);
     auto voice = std::make_unique<Open303Voice>();
     int16_t samples[128];

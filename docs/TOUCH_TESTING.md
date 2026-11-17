@@ -11,9 +11,12 @@ logging immediately. Current local ESP-IDF is 5.5.6; GitHub CI uses 5.5.5.
 ## Controls
 
 - Tap or move on the pad: one note per finger, up to five configured voices.
-- Automatic arpeggiation is disabled. Holding a finger keeps its note without
-  starting a timed pattern; the instrument's natural envelope still applies.
+- Arp off/on is an explicit button beside Hold, default off. A long hold does not
+  enable it. With Arp on, held notes drive the pattern; Hold can latch that pattern.
+- With Arp off, Acid notes sustain while pressed or latched. Its filter envelope
+  still decays naturally, but its amplitude does not fade to silence.
 - Lift all fingers: stop. Hold retains the released notes until switched off.
+  Enabling Hold after release recalls the most recently played note.
 - Open Instrument: stop all pad notes and arpeggiation. Picker interaction uses
   one pointer at a time and does not start the arpeggiator.
 - Acid: with three or more pad fingers down, the average finger position sweeps
@@ -39,7 +42,8 @@ bass body; the current voicing addresses that feedback and needs listening confi
 2. Lift a middle finger while keeping the others down. Its note must release
    without swapping the pitches of the remaining fingers.
 3. Move fingers continuously: notes should follow without starting the arp.
-4. Hold still for several seconds. Verify no arpeggiator starts and pitch stays fixed.
+4. With Arp off, hold still for at least ten seconds. Verify audible sustain and no
+   automatic arp. Turn Arp on/off and verify immediate mode changes and amber feedback.
 5. Change the held chord, release it, and repeat with Hold enabled and disabled.
 6. Open the picker while notes are held. Verify silence and normal wheel input.
 7. Repeat with Saw, FM bell, and Organ; watch for panics, stuck notes, or distortion.

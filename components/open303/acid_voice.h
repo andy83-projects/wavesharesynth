@@ -12,6 +12,7 @@ public:
     void reset();
     void set_controls(uint16_t cutoff_hz, uint8_t resonance);
     void set_waveform(bool square);
+    void set_sustain(bool enabled);
     void note_on(uint8_t midi_note, bool accent, bool slide, uint16_t volume);
     void note_off();
     void set_volume(uint16_t volume) { target_gain = volume > 255 ? 1.0f : volume / 255.0f; }
@@ -21,6 +22,7 @@ private:
     std::unique_ptr<rosic::Open303> engine;
     bool gate = false;
     bool sounding = false;
+    bool sustain = false;
     unsigned quiet_frames = 0;
     unsigned faults = 0;
     float target_cutoff = 350, cutoff = 350;

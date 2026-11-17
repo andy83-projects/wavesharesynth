@@ -21,6 +21,7 @@ Open303Voice::~Open303Voice() = default;
 
 void Open303Voice::reset()
 {
+    set_sustain(false);
     engine->allNotesOff();
     engine->ampEnv.reset();
     engine->ampDeClicker.reset();
@@ -42,6 +43,13 @@ void Open303Voice::set_controls(uint16_t hz, uint8_t res)
 }
 
 void Open303Voice::set_waveform(bool square) { engine->setWaveform(square ? 1.0f : 0.0f); }
+
+void Open303Voice::set_sustain(bool enabled)
+{
+    if(sustain == enabled) return;
+    sustain = enabled;
+    engine->ampEnv.setSustainLevel(enabled ? 0.65f : 0.0f);
+}
 
 void Open303Voice::note_on(uint8_t note, bool accent, bool slide, uint16_t volume)
 {
