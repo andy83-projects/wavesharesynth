@@ -32,12 +32,15 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 ## Milestones
 
-### Milestone 1: Audio Test (In Progress)
-- [ ] Project builds
-- [ ] ES8311 codec initialized over I2C
-- [ ] Speaker amp enabled
-- [ ] ESP32Synth plays a test chord through speaker
-- [ ] Verify audio output with listen test
+### Milestone 4: Touch-controlled synth interaction (Complete)
+- [x] ESP32Synth integrated through the Waveshare BSP ES8311/I2S path
+- [x] Touch X controls pitch from 130–1,000 Hz
+- [x] Touch Y controls volume with vertical inversion
+- [x] Touch controls pass through a FreeRTOS queue to the audio task
+- [x] Touch release sends note-off; startup chord remains disabled
+- [x] Firmware flashed and touch-generated audio verified on hardware
+
+See [TOUCH_LAYOUT.md](TOUCH_LAYOUT.md) for the control layout and mapping.
 
 ## Project Structure
 
@@ -46,7 +49,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 ├── CMakeLists.txt
 ├── main/
 │   ├── CMakeLists.txt
-│   └── main.c           (app entry, audio test)
+│   └── main.cpp         (app entry, LVGL UI and synth controls)
 ├── components/
 │   ├── esp32synth/      (ESP32Synth library)
 │   └── ...
