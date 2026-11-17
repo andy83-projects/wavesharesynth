@@ -833,6 +833,8 @@ static void create_pad(void)
     lv_obj_move_foreground(g_ui.hold_button);
     lv_obj_move_foreground(g_ui.arp_button);
     lv_obj_move_foreground(instrument);
+    lv_obj_invalidate(g_ui.hold_button);
+    lv_obj_invalidate(g_ui.arp_button);
     for(auto &contact : g_ui.contacts) {
         contact.marker = circle(g_ui.pad, 24, col(UI_COL_ACCENT_LIGHT), LV_OPA_COVER);
         hide(contact.marker);
