@@ -150,13 +150,14 @@ static void touch_event_cb(lv_event_t *event)
         return;
     }
 
-    lv_indev_t *indev = lv_indev_get_active();
+    lv_indev_t *indev = lv_indev_get_act();
     lv_point_t point = {0};
     if (indev != NULL) {
         lv_indev_get_point(indev, &point);
     }
-    lv_label_set_text_fmt(touch_status_label, "Touch: %d, %d", point.x, point.y);
-    ESP_LOGI(TAG, "LVGL touch event: x=%d y=%d", point.x, point.y);
+    lv_label_set_text_fmt(touch_status_label, "Touch: %d, %d",
+                          (int)point.x, (int)point.y);
+    ESP_LOGI(TAG, "LVGL touch event: x=%d y=%d", (int)point.x, (int)point.y);
 }
 
 esp_err_t init_touch(void)
