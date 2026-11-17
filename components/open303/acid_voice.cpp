@@ -39,7 +39,7 @@ void Open303Voice::set_controls(uint16_t hz, uint8_t res)
 {
     target_cutoff = std::clamp(float(hz), 80.0f, 6000.0f);
     /* Musical control taper: expose the resonant region without losing zero. */
-    target_resonance = 98.0f * std::sqrt(res / 255.0f);
+    target_resonance = 120.0f * std::sqrt(res / 255.0f);
 }
 
 void Open303Voice::set_waveform(bool square) { engine->setWaveform(square ? 1.0f : 0.0f); }
