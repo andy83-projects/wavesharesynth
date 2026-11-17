@@ -360,8 +360,6 @@ static void arp_event(lv_event_t *event)
     lv_label_set_text(g_ui.arp_label, g_ui.arp_enabled ? "Arp on" : "Arp off");
     lv_obj_set_style_bg_color(g_ui.arp_button, col(g_ui.arp_enabled ? UI_COL_ACCENT : UI_COL_BG), 0);
     lv_obj_set_style_bg_opa(g_ui.arp_button, g_ui.arp_enabled ? LV_OPA_COVER : UI_OPA_PILL_IDLE, 0);
-    lv_obj_set_style_text_color(g_ui.arp_label, col(g_ui.arp_enabled ? UI_COL_ACCENT_TEXT : UI_COL_FG), 0);
-    lv_obj_set_style_text_opa(g_ui.arp_label, LV_OPA_COVER, 0);
     lv_obj_invalidate(g_ui.arp_button);
     ESP_LOGI("SYNTH_UI", "Arp enabled=%d", g_ui.arp_enabled);
     publish_contacts();
@@ -495,8 +493,6 @@ static void hold_event(lv_event_t *event)
     }
     lv_obj_set_style_bg_color(g_ui.hold_button, col(g_ui.hold ? UI_COL_ACCENT : UI_COL_BG), 0);
     lv_obj_set_style_bg_opa(g_ui.hold_button, g_ui.hold ? LV_OPA_COVER : UI_OPA_PILL_IDLE, 0);
-    lv_obj_set_style_text_color(g_ui.hold_label, col(g_ui.hold ? UI_COL_ACCENT_TEXT : UI_COL_FG), 0);
-    lv_obj_set_style_text_opa(g_ui.hold_label, LV_OPA_COVER, 0);
     lv_obj_invalidate(g_ui.hold_button);
     ESP_LOGI("SYNTH_UI", "Hold enabled=%d", g_ui.hold);
 }
@@ -801,7 +797,7 @@ static void create_pad(void)
     lv_obj_set_style_bg_color(g_ui.hold_button, col(UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.hold_button, UI_OPA_PILL_IDLE, 0);
     lv_obj_set_style_border_width(g_ui.hold_button, 0, 0);
-    g_ui.hold_label = label(g_ui.hold_button, "Hold", UI_FONT_SMALL, UI_OPA_TEXT_LABEL);
+    g_ui.hold_label = label(g_ui.hold_button, "Hold", UI_FONT_SMALL, LV_OPA_COVER);
     lv_obj_center(g_ui.hold_label);
     lv_obj_add_event_cb(g_ui.hold_button, hold_event, LV_EVENT_CLICKED, nullptr);
 
@@ -812,7 +808,7 @@ static void create_pad(void)
     lv_obj_set_style_radius(g_ui.arp_button, UI_HOLD_RADIUS, 0);
     lv_obj_set_style_bg_color(g_ui.arp_button, col(UI_COL_FG), 0);
     lv_obj_set_style_bg_opa(g_ui.arp_button, UI_OPA_PILL_IDLE, 0);
-    g_ui.arp_label = label(g_ui.arp_button, "Arp off", UI_FONT_SMALL, UI_OPA_TEXT_LABEL);
+    g_ui.arp_label = label(g_ui.arp_button, "Arp off", UI_FONT_SMALL, LV_OPA_COVER);
     lv_obj_center(g_ui.arp_label);
     lv_obj_add_event_cb(g_ui.arp_button, arp_event, LV_EVENT_CLICKED, nullptr);
 
