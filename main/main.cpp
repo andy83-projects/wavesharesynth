@@ -287,7 +287,7 @@ static void init_ui(void)
     lv_obj_align(touch_status_label, LV_ALIGN_BOTTOM_MID, 0, -36);
 }
 
-void app_main(void)
+extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=== Waveshare Synth Boot ===");
     ESP_LOGI(TAG, "Target: ESP32-P4-WIFI6-Touch-LCD-XC");
