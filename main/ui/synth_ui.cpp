@@ -360,9 +360,10 @@ static void arp_event(lv_event_t *event)
     lv_label_set_text(g_ui.arp_label, g_ui.arp_enabled ? "Arp on" : "Arp off");
     lv_obj_set_style_bg_color(g_ui.arp_button, col(g_ui.arp_enabled ? UI_COL_ACCENT : UI_COL_BG), 0);
     lv_obj_set_style_bg_opa(g_ui.arp_button, g_ui.arp_enabled ? LV_OPA_COVER : UI_OPA_PILL_IDLE, 0);
+    lv_obj_clear_flag(g_ui.arp_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(g_ui.arp_button);
     lv_obj_invalidate(g_ui.arp_button);
     ESP_LOGI("SYNTH_UI", "Arp enabled=%d", g_ui.arp_enabled);
-    publish_contacts();
 }
 
 static void stop_contacts(void)
@@ -493,6 +494,8 @@ static void hold_event(lv_event_t *event)
     }
     lv_obj_set_style_bg_color(g_ui.hold_button, col(g_ui.hold ? UI_COL_ACCENT : UI_COL_BG), 0);
     lv_obj_set_style_bg_opa(g_ui.hold_button, g_ui.hold ? LV_OPA_COVER : UI_OPA_PILL_IDLE, 0);
+    lv_obj_clear_flag(g_ui.hold_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(g_ui.hold_button);
     lv_obj_invalidate(g_ui.hold_button);
     ESP_LOGI("SYNTH_UI", "Hold enabled=%d", g_ui.hold);
 }
