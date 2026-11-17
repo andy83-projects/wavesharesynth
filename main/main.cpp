@@ -65,6 +65,8 @@ static uint16_t desired_preset = 0;
 static uint16_t desired_cutoff = 350;
 static uint8_t desired_resonance = 140;
 static synth_envelope_t desired_envelope = preset_envelope(0);
+/* Latest voice set from the UI; picker auditions borrow slot 0 on top of it. */
+static synth_ui_voice_t desired_voices[SYNTH_UI_MAX_VOICES]{};
 
 /* Master echo: a 1 s ring buffer; the UI sets time/feedback/mix (Q8). */
 #define DELAY_MAX_SAMPLES   SAMPLE_RATE
@@ -92,14 +94,12 @@ static inline int16_t apply_delay(int16_t dry)
 static Open303Voice *acid_voice = nullptr;
 static uint32_t acid_benchmark_worst_us = 0;
 static uint32_t acid_benchmark_average_us = 0;
-static_assert(MAX_VOICES >= SYNTH_UI_MAX_CONTACTS, "Not enough synth voices for touch contacts");
+static_assert(MAX_VOICES >= SYNTH_UI_MAX_VOICES, "Not enough synth voices for touch contacts and held layers");
 
 typedef struct {
-    synth_ui_note_t notes[SYNTH_UI_MAX_CONTACTS];
-    uint16_t preset;
+    synth_ui_voice_t voices[SYNTH_UI_MAX_VOICES];
     uint16_t cutoff_hz;
     uint8_t resonance;
-    synth_envelope_t envelope;
 } synth_command_t;
 
 /* Presets rendered by the dedicated Open303 voice: 3 = Acid, 5 = darker Acid bass. */
@@ -165,81 +165,161 @@ static void apply_synth_preset(uint16_t preset, uint16_t voice)
     }
 }
 
-static void synth_output_callback(int16_t *samples, int num_samples)
+static uint16_t voice_preset[SYNTH_UI_MAX_VOICES];
+static synth_envelope_t voice_envelope[SYNTH_UI_MAX_VOICES];
+static bool gate[SYNTH_UI_MAX_VOICES]{};
+static uint32_t triggers[SYNTH_UI_MAX_VOICES]{};
+static uint16_t acid_preset = UINT16_MAX;
+static synth_envelope_t acid_envelope{};
+static bool acid_gate = false;
+static uint32_t acid_trigger = 0;
+static int acid_midi = -1;
+static volatile uint16_t arp_bpm = 120;
+
+/* Arps run here, on the audio core, so UI rendering can never stall them.
+ * Each group plays one note at a time on its lowest slot; the other members
+ * are cleared so they are neither heard nor counted toward voice levels. */
+static void run_arps(synth_ui_voice_t *voices)
 {
-    static uint16_t applied_preset = UINT16_MAX;
-    static bool gate[SYNTH_UI_MAX_CONTACTS]{};
-    static uint32_t triggers[SYNTH_UI_MAX_CONTACTS]{};
-    static bool acid_gate = false;
-    static uint32_t acid_trigger = 0;
-    static int acid_midi = -1;
-    static synth_envelope_t applied_envelope{};
-    synth_command_t command;
-    while (xQueueReceive(synth_command_queue, &command, 0) == pdTRUE) {
-        const bool preset_changed = command.preset != applied_preset;
-        if(preset_changed) {
-            for(uint16_t i = 0; i < SYNTH_UI_MAX_CONTACTS; ++i) {
-                apply_synth_preset(command.preset, i);
-                gate[i] = false;
-            }
-            applied_preset = command.preset;
-            acid_voice->reset();
-            acid_voice->set_dark(applied_preset == 5);
-            acid_gate = false;
-            acid_midi = -1;
-            ESP_LOGI(TAG, "Preset=%u on %u voices, core %d", applied_preset, SYNTH_UI_MAX_CONTACTS, xPortGetCoreID());
+    const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    const uint32_t step_ms = 15000u / arp_bpm; /* sixteenth notes */
+    const uint32_t gate_ms = step_ms * 3 / 4;
+    uint32_t done = 0;
+    for(uint16_t lead = 0; lead < SYNTH_UI_MAX_VOICES; ++lead) {
+        const uint8_t group = voices[lead].arp_group;
+        if(!group || (done & (1u << group)) || !voices[lead].note.pressed) continue;
+        done |= 1u << group;
+        uint8_t members[SYNTH_UI_MAX_VOICES];
+        uint16_t n = 0;
+        for(uint16_t i = lead; i < SYNTH_UI_MAX_VOICES; ++i) {
+            if(voices[i].arp_group == group && voices[i].note.pressed) members[n++] = (uint8_t)i;
         }
-        if(preset_changed || !synth_envelope_equal(command.envelope, applied_envelope)) {
-            applied_envelope = command.envelope;
-            const synth_envelope_t &env = applied_envelope;
-            if(is_acid_preset(applied_preset)) {
-                acid_voice->set_envelope(env.decay, env.filter_decay, env.release);
-            } else {
-                for(uint16_t i = 0; i < SYNTH_UI_MAX_CONTACTS; ++i) synth.setEnv(i, env.attack, env.decay, env.sustain, env.release);
+        for(uint16_t i = 1; i < n; ++i) {
+            for(uint16_t j = i; j > 0 && voices[members[j]].note.frequency_centi_hz <
+                                          voices[members[j - 1]].note.frequency_centi_hz; --j) {
+                const uint8_t tmp = members[j]; members[j] = members[j - 1]; members[j - 1] = tmp;
             }
         }
-        if(is_acid_preset(applied_preset)) {
-            acid_voice->set_controls(command.cutoff_hz, command.resonance);
-            const synth_ui_note_t *priority = nullptr;
-            for(const auto &note : command.notes) {
-                if(note.pressed && (!priority || (int32_t)(note.trigger - priority->trigger) > 0)) priority = &note;
-            }
-            if(priority && priority->frequency_centi_hz > 0) {
-                acid_voice->set_sustain(priority->sustain);
-                const int midi = (int)lroundf(69.0f + 12.0f * log2f(priority->frequency_centi_hz / 44000.0f));
-                if(!acid_gate || priority->trigger != acid_trigger || midi != acid_midi) {
-                    const bool moving_held_note = acid_gate && priority->trigger == acid_trigger;
-                    acid_voice->note_on(midi, priority->accent, priority->slide || moving_held_note, priority->volume);
-                }
-                acid_voice->set_volume(priority->volume);
-                acid_trigger = priority->trigger;
-                acid_midi = midi;
-                acid_gate = true;
-            } else {
-                acid_voice->note_off();
-                acid_gate = false;
-            }
+        const uint32_t elapsed = now_ms - voices[lead].arp_start_ms;
+        const uint32_t step = elapsed / step_ms;
+        synth_ui_voice_t out = voices[members[step % n]];
+        if(n == 1) {
+            static const float ratios[] = {1.0f, 1.1892071f, 1.4983071f, 2.0f};
+            out.note.frequency_centi_hz = (uint32_t)(out.note.frequency_centi_hz * ratios[step % 4]);
+        }
+        out.note.trigger = voices[lead].arp_base_trigger + step;
+        out.note.sustain = false;
+        if(is_acid_preset(out.preset)) {
+            out.note.accent = step % 4 == 0;
+            out.note.slide = step % 4 == 2 || step % 4 == 3;
+            const uint32_t next = (step + 1) % 4;
+            out.note.pressed = next == 2 || next == 3 || elapsed % step_ms < gate_ms;
+        } else {
+            out.note.pressed = elapsed % step_ms < gate_ms;
+        }
+        for(uint16_t i = 0; i < n; ++i) voices[members[i]] = {};
+        voices[lead] = out;
+    }
+}
+
+static void apply_voices(const synth_ui_voice_t *voices, uint16_t cutoff_hz, uint8_t resonance)
+{
+    /* One Open303 exists, so the newest acid note owns it. */
+    const synth_ui_voice_t *acid = nullptr;
+    uint16_t active_count = 0;
+    for(uint16_t i = 0; i < SYNTH_UI_MAX_VOICES; ++i) {
+        const synth_ui_voice_t &voice = voices[i];
+        if(is_acid_preset(voice.preset)) {
+            if(voice.note.pressed && (!acid || (int32_t)(voice.note.trigger - acid->note.trigger) > 0)) acid = &voice;
+        } else if(voice.note.frequency_centi_hz) {
+            /* Occupied slots, gated or not, so arp gates don't pump other voices' level. */
+            ++active_count;
+        }
+    }
+    if(active_count == 0) active_count = 1;
+
+    for(uint16_t i = 0; i < SYNTH_UI_MAX_VOICES; ++i) {
+        const synth_ui_voice_t &voice = voices[i];
+        if(!voice.note.pressed || is_acid_preset(voice.preset)) {
+            if(gate[i]) synth.noteOff(i);
+            gate[i] = false;
             continue;
         }
-        uint16_t active_count = 0;
-        for(const auto &note : command.notes) if(note.pressed) ++active_count;
-        if(active_count == 0) active_count = 1;
-        for(uint16_t i = 0; i < SYNTH_UI_MAX_CONTACTS; ++i) {
-            const synth_ui_note_t &note = command.notes[i];
-            if (note.pressed) {
-                if(!gate[i] || triggers[i] != note.trigger) {
-                    synth.noteOn(i, note.frequency_centi_hz, note.volume / active_count);
-                    gate[i] = true;
-                    triggers[i] = note.trigger;
-                } else {
-                    synth.setFrequency(i, note.frequency_centi_hz);
-                    synth.setVolume(i, note.volume / active_count);
-                }
-            } else {
-                if(gate[i]) synth.noteOff(i);
-                gate[i] = false;
-            }
+        bool force_envelope = false;
+        if(voice_preset[i] != voice.preset) {
+            apply_synth_preset(voice.preset, i);
+            voice_preset[i] = voice.preset;
+            gate[i] = false;
+            force_envelope = true;
         }
+        if(force_envelope || !synth_envelope_equal(voice.envelope, voice_envelope[i])) {
+            voice_envelope[i] = voice.envelope;
+            synth.setEnv(i, voice.envelope.attack, voice.envelope.decay, voice.envelope.sustain, voice.envelope.release);
+        }
+        const synth_ui_note_t &note = voice.note;
+        if(!gate[i] || triggers[i] != note.trigger) {
+            synth.noteOn(i, note.frequency_centi_hz, note.volume / active_count);
+            gate[i] = true;
+            triggers[i] = note.trigger;
+        } else {
+            synth.setFrequency(i, note.frequency_centi_hz);
+            synth.setVolume(i, note.volume / active_count);
+        }
+    }
+
+    if(!acid) {
+        if(acid_gate) acid_voice->note_off();
+        acid_gate = false;
+        return;
+    }
+    bool force_acid_envelope = false;
+    if(acid->preset != acid_preset) {
+        acid_voice->reset();
+        acid_voice->set_dark(acid->preset == 5);
+        acid_preset = acid->preset;
+        acid_gate = false;
+        acid_midi = -1;
+        force_acid_envelope = true;
+        ESP_LOGI(TAG, "Open303 preset=%u", acid_preset);
+    }
+    if(force_acid_envelope || !synth_envelope_equal(acid->envelope, acid_envelope)) {
+        acid_envelope = acid->envelope;
+        acid_voice->set_envelope(acid_envelope.decay, acid_envelope.filter_decay, acid_envelope.release);
+    }
+    acid_voice->set_controls(cutoff_hz, resonance);
+    const synth_ui_note_t &priority = acid->note;
+    acid_voice->set_sustain(priority.sustain);
+    const int midi = (int)lroundf(69.0f + 12.0f * log2f(priority.frequency_centi_hz / 44000.0f));
+    if(!acid_gate || priority.trigger != acid_trigger || midi != acid_midi) {
+        const bool moving_held_note = acid_gate && priority.trigger == acid_trigger;
+        acid_voice->note_on(midi, priority.accent, priority.slide || moving_held_note, priority.volume);
+    }
+    acid_voice->set_volume(priority.volume);
+    acid_trigger = priority.trigger;
+    acid_midi = midi;
+    acid_gate = true;
+}
+
+static void synth_output_callback(int16_t *samples, int num_samples)
+{
+    static synth_command_t current{};
+    static bool have_command = false;
+    static bool voices_initialised = false;
+    if(!voices_initialised) {
+        for(auto &preset : voice_preset) preset = UINT16_MAX;
+        voices_initialised = true;
+    }
+    synth_command_t command;
+    while (xQueueReceive(synth_command_queue, &command, 0) == pdTRUE) {
+        current = command;
+        have_command = true;
+    }
+    /* Re-evaluated every block (not only on UI updates) so arps keep time. */
+    if(have_command) {
+        synth_ui_voice_t voices[SYNTH_UI_MAX_VOICES];
+        memcpy(voices, current.voices, sizeof(voices));
+        run_arps(voices);
+        apply_voices(voices, current.cutoff_hz, current.resonance);
     }
 
     if (num_samples > SYNTH_OUTPUT_BLOCK_MAX) {
@@ -247,14 +327,17 @@ static void synth_output_callback(int16_t *samples, int num_samples)
         return;
     }
 
-    if(is_acid_preset(applied_preset)) {
+    /* The 303 layers on top of the synth voices rather than replacing them. */
+    static int16_t acid_block[SYNTH_OUTPUT_BLOCK_MAX];
+    {
         const int64_t start = esp_timer_get_time();
-        acid_voice->render(samples, num_samples);
+        acid_voice->render(acid_block, num_samples);
+        for(int i = 0; i < num_samples; ++i) samples[i] = clamp16((int32_t)samples[i] + acid_block[i]);
         const uint32_t used = (uint32_t)(esp_timer_get_time() - start);
         static uint32_t worst = 0;
         static int64_t last_log = 0;
         if(used > worst) worst = used;
-        if(esp_timer_get_time() - last_log > 2000000) {
+        if(acid_gate && esp_timer_get_time() - last_log > 2000000) {
             ESP_LOGI(TAG, "Open303 core=%d render=%lu us worst=%lu deadline=%d us faults=%u; boot bench avg=%lu worst=%lu",
                 xPortGetCoreID(), (unsigned long)used, (unsigned long)worst,
                 num_samples * 1000000 / SAMPLE_RATE, acid_voice->fault_count(),
@@ -278,11 +361,10 @@ static void queue_synth_command(uint32_t frequency_centi_hz, uint16_t volume,
         return;
     }
     synth_command_t command{};
-    command.preset = desired_preset;
+    memcpy(command.voices, desired_voices, sizeof(command.voices));
     command.cutoff_hz = desired_cutoff;
     command.resonance = desired_resonance;
-    command.envelope = desired_envelope;
-    command.notes[0] = {frequency_centi_hz, volume, pressed, 0, false, false, false};
+    command.voices[0] = {{frequency_centi_hz, volume, pressed, 0, false, false, false}, desired_preset, desired_envelope, 0, 0, 0};
     xQueueOverwrite(synth_command_queue, &command);
 }
 
@@ -502,15 +584,14 @@ static void ui_select_preset(uint16_t preset)
     queue_synth_command(0, 0, false);
 }
 
-static void ui_set_notes(const synth_ui_note_t *notes)
+static void ui_set_voices(const synth_ui_voice_t *voices)
 {
+    memcpy(desired_voices, voices, sizeof(desired_voices));
     if(!synth_command_queue) return;
     synth_command_t command{};
-    command.preset = desired_preset;
+    memcpy(command.voices, voices, sizeof(command.voices));
     command.cutoff_hz = desired_cutoff;
     command.resonance = desired_resonance;
-    command.envelope = desired_envelope;
-    memcpy(command.notes, notes, sizeof(command.notes));
     xQueueOverwrite(synth_command_queue, &command);
 }
 
@@ -528,6 +609,11 @@ static void ui_set_delay(uint16_t time_ms, uint8_t feedback_pct, uint8_t mix_pct
     desired_delay_samples = samples;
 }
 
+static void ui_set_tempo(uint16_t bpm)
+{
+    arp_bpm = bpm;
+}
+
 static void ui_set_acid_filter(uint16_t cutoff_hz, uint8_t resonance)
 {
     desired_cutoff = cutoff_hz;
@@ -540,10 +626,11 @@ static void init_ui(void)
         .note_on = ui_note_on,
         .note_off = ui_note_off,
         .select_preset = ui_select_preset,
-        .set_notes = ui_set_notes,
+        .set_voices = ui_set_voices,
         .set_acid_filter = ui_set_acid_filter,
         .set_envelope = ui_set_envelope,
         .set_delay = ui_set_delay,
+        .set_tempo = ui_set_tempo,
     };
     synth_ui_init(lv_screen_active(), &audio);
 }

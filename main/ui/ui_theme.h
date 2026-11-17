@@ -75,6 +75,7 @@ extern "C" {
 #define UI_PROG_RING_W         18
 #define UI_PROG_SEG_DEG        30
 #define UI_PROG_SEG_GAP_DEG    2    /* gap at each end of a segment (~0.04 rad) */
+#define UI_SLOW_FRAME_MS       40   /* log frames slower than this            */
 #define UI_LONG_PRESS_MS       600  /* hold on a wedge to reassign its instrument */
 #define UI_LONG_PRESS_SLOP     14   /* px of drift allowed during the hold        */
 #define UI_TAP_MAX_MS          300  /* a wedge press shorter than this is a tap   */
