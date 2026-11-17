@@ -152,8 +152,8 @@ static void touch_poll_task(void *arg)
 
 esp_err_t init_touch(void)
 {
-    const bsp_touch_config_t touch_cfg = {
-        .flags = {
+    const bsp_display_cfg_t touch_cfg = {
+        .touch_flags = {
             .swap_xy = 0,
             .mirror_x = 0,
             .mirror_y = 0,
