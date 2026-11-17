@@ -27,6 +27,7 @@ static const char *TAG = "WAVESHARESYNTH";
 #define I2S_WS_PIN      GPIO_NUM_10     /* Word Select (LRCK) */
 #define I2S_DO_PIN      GPIO_NUM_9      /* Data Out to codec (DSDIN) */
 #define I2S_DI_PIN      GPIO_NUM_11     /* Data In from codec (ASDOUT) */
+#define DISPLAY_BACKLIGHT_PIN GPIO_NUM_26
 
 /* I2C codec control bus */
 #define I2C_SDA_PIN     GPIO_NUM_7
@@ -99,6 +100,18 @@ esp_err_t init_synth(void)
 
 esp_err_t init_display(void)
 {
+    const gpio_config_t backlight_cfg = {
+        .pin_bit_mask = (1ULL << DISPLAY_BACKLIGHT_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&backlight_cfg), TAG,
+                        "Failed to configure display backlight");
+    ESP_RETURN_ON_ERROR(gpio_set_level(DISPLAY_BACKLIGHT_PIN, 1), TAG,
+                        "Failed to enable display backlight GPIO");
+
     ESP_RETURN_ON_ERROR(bsp_display_new(NULL, &display_panel, &display_io), TAG,
                         "Failed to initialize 4C MIPI-DSI display");
     ESP_RETURN_ON_ERROR(bsp_display_backlight_on(), TAG,
