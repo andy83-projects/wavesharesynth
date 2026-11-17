@@ -839,6 +839,8 @@ static void create_pad(void)
     lv_obj_move_foreground(instrument);
     lv_obj_invalidate(g_ui.hold_button);
     lv_obj_invalidate(g_ui.arp_button);
+    ESP_LOGI("SYNTH_UI", "UI setup complete: buttons parent is screen, arp parent=%p screen=%p pad=%p",
+             lv_obj_get_parent(g_ui.arp_button), g_ui.screen, g_ui.pad);
     for(auto &contact : g_ui.contacts) {
         contact.marker = circle(g_ui.pad, 24, col(UI_COL_ACCENT_LIGHT), LV_OPA_COVER);
         hide(contact.marker);
