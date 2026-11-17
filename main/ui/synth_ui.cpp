@@ -76,6 +76,7 @@ struct UiState {
     bool touching = false;
     bool wheel = false;
     bool long_pressed = false;
+    bool pad_moved = false;
     lv_point_t press_point{};
     float last_angle = 0.0f;
     float wheel_degrees = 0.0f;
@@ -201,22 +202,40 @@ static void set_pad_audio(int x, int y)
 static void pad_event(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
+    lv_indev_t *indev = lv_indev_get_act();
+    lv_point_t point{};
+    if(indev) lv_indev_get_point(indev, &point);
+
     if(code == LV_EVENT_LONG_PRESSED) {
-        g_ui.long_pressed = true;
-        lv_obj_clear_flag(g_ui.picker, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
-        if(g_ui.audio.note_off) g_ui.audio.note_off();
+        const int dx = point.x - g_ui.press_point.x;
+        const int dy = point.y - g_ui.press_point.y;
+        const int start_dx = g_ui.press_point.x - UI_CX;
+        const int start_dy = g_ui.press_point.y - UI_CY;
+        const bool started_near_center =
+            (start_dx * start_dx + start_dy * start_dy) <= (100 * 100);
+        if(!g_ui.pad_moved && started_near_center && (dx * dx + dy * dy) <= (20 * 20)) {
+            g_ui.long_pressed = true;
+            lv_obj_clear_flag(g_ui.picker, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
+            if(g_ui.audio.note_off) g_ui.audio.note_off();
+        }
         return;
     }
     if(code != LV_EVENT_PRESSED && code != LV_EVENT_PRESSING && code != LV_EVENT_RELEASED) return;
 
-    lv_indev_t *indev = lv_indev_get_act();
-    lv_point_t point{};
-    if(indev) lv_indev_get_point(indev, &point);
+    if(code == LV_EVENT_PRESSED) {
+        g_ui.press_point = point;
+        g_ui.pad_moved = false;
+    } else if(code == LV_EVENT_PRESSING) {
+        const int dx = point.x - g_ui.press_point.x;
+        const int dy = point.y - g_ui.press_point.y;
+        if((dx * dx + dy * dy) > (20 * 20)) g_ui.pad_moved = true;
+    }
     if(code == LV_EVENT_RELEASED) {
         if(!g_ui.long_pressed && !g_ui.hold && g_ui.audio.note_off) g_ui.audio.note_off();
         g_ui.long_pressed = false;
         g_ui.touching = false;
+        g_ui.pad_moved = false;
         if(!g_ui.hold) hide(g_ui.touch_halo), hide(g_ui.touch_core), hide(g_ui.touch_dot),
             hide(g_ui.cross_x), hide(g_ui.cross_y);
         return;
@@ -319,24 +338,28 @@ static void picker_event(lv_event_t *event)
     if(g_ui.wheel && fabsf(g_ui.wheel_degrees) < UI_WHEEL_TAP_DEG) {
         float angle = point_angle(g_ui.press_point);
         if(fabsf(angle) < UI_WHEEL_BTN_DEG) {
-            close_picker();
+            if(g_ui.picker_in_group) {
+                g_ui.picker_in_group = false;
+                g_ui.menu_item = g_ui.menu_group;
+                update_picker_rows();
+            } else {
+                close_picker();
+            }
         } else if(fabsf(fabsf(angle) - 180.0f) < UI_WHEEL_BTN_DEG) {
+            /* Audition is deliberately explicit; scrolling is silent. */
+            if(g_ui.audio.note_on) g_ui.audio.note_on(44000, 180);
+            if(g_ui.audio.note_off) g_ui.audio.note_off();
+        } else if(fabsf(fabsf(angle) - 90.0f) < UI_WHEEL_BTN_DEG) {
             g_ui.program = (g_ui.program + (angle > 0 ? 1 : UI_PROG_COUNT - 1)) % UI_PROG_COUNT;
             update_pad_text();
+        } else if(g_ui.picker_in_group) {
             close_picker();
-        } else if(fabsf(fabsf(angle) - 90.0f) < UI_WHEEL_BTN_DEG) {
-            if(angle > 0 && g_ui.audio.note_on) g_ui.audio.note_on(44000, 180);
-            if(angle > 0 && g_ui.audio.note_off) g_ui.audio.note_off();
-        }
-    } else if(g_ui.wheel && point_radius(g_ui.press_point) < UI_WHEEL_R_IN) {
-        if(!g_ui.picker_in_group) {
+            update_pad_text();
+        } else {
             g_ui.menu_group = g_ui.menu_item;
             g_ui.menu_item = 0;
             g_ui.picker_in_group = true;
             update_picker_rows();
-        } else {
-            close_picker();
-            update_pad_text();
         }
     }
 }
@@ -358,8 +381,6 @@ static void create_pad(void)
     lv_obj_set_style_border_opa(circle_area, UI_OPA_HAIRLINE, 0);
     lv_obj_set_style_clip_corner(circle_area, true, 0);
 
-    static lv_point_precise_t vertical[2];
-    static lv_point_precise_t horizontal[2];
     for(int i = 0; i <= UI_PAD_R * 2 / UI_GRID_STEP; ++i) {
         lv_obj_t *line = lv_line_create(circle_area);
         static lv_point_precise_t points[26][2];
