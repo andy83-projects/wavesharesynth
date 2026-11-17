@@ -2,6 +2,8 @@
 
 A Kaoss-pad-style synth running on the Waveshare ESP32-P4-WIFI6-Touch-LCD-4C board.
 
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-andy83-FFDD00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/andy83)
+
 ## Hardware
 - **Board**: Waveshare ESP32-P4-WIFI6-Touch-LCD-4C
 - **Display**: 4" round 720×720 IPS touch (GT9271 capacitive)
