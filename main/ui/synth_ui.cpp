@@ -303,6 +303,17 @@ static void close_picker(void)
     lv_obj_clear_flag(g_ui.pad, LV_OBJ_FLAG_HIDDEN);
 }
 
+static void close_picker_async(void *)
+{
+    close_picker();
+    update_pad_text();
+}
+
+static void request_close_picker(void)
+{
+    lv_async_call(close_picker_async, nullptr);
+}
+
 enum PickerButtonAction : uintptr_t {
     PICKER_BACK = 1,
     PICKER_AUDITION,
@@ -321,7 +332,7 @@ static void picker_button_event(lv_event_t *event)
             g_ui.menu_item = g_ui.menu_group;
             update_picker_rows();
         } else {
-            close_picker();
+            request_close_picker();
         }
         break;
     case PICKER_AUDITION:
@@ -347,8 +358,7 @@ static void select_picker_item(void)
         const MenuItem &item = kMenu[g_ui.menu_group].items[g_ui.menu_item];
         g_ui.program = item.program;
         g_ui.instrument_name = item.name;
-        close_picker();
-        update_pad_text();
+        request_close_picker();
     } else {
         g_ui.menu_group = g_ui.menu_item;
         g_ui.menu_item = 0;
@@ -578,6 +588,12 @@ static void create_picker(void)
     }
     g_ui.picker_hint = label(g_ui.picker, "Tap center to select", UI_FONT_HINT, UI_OPA_TEXT_HINT);
     lv_obj_align(g_ui.picker_hint, LV_ALIGN_TOP_MID, 0, UI_HINT_Y - 10);
+    lv_obj_t *picker_touch = lv_obj_create(g_ui.picker);
+    style_plain(picker_touch);
+    lv_obj_set_size(picker_touch, UI_SCREEN_W, UI_SCREEN_H);
+    lv_obj_set_pos(picker_touch, 0, 0);
+    lv_obj_set_style_radius(picker_touch, 0, 0);
+    lv_obj_add_event_cb(picker_touch, picker_event, LV_EVENT_ALL, nullptr);
     picker_button(g_ui.picker, "Menu", UI_CX - 75, 46, 150, 70, PICKER_BACK);
     picker_button(g_ui.picker, "Audition", UI_CX - 75, UI_SCREEN_H - 116, 150, 70, PICKER_AUDITION);
     picker_button(g_ui.picker, LV_SYMBOL_PREV, 36, UI_CY - 50, 110, 100, PICKER_PREVIOUS);
